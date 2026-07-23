@@ -49,7 +49,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=24">
+  <link rel="stylesheet" href="/static/app.css?v=26">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
 </head>
 <body>
@@ -261,8 +261,13 @@
     <!-- LIBRARY ───────────────────────────────────────────────────────── -->
     <main class="page" id="page-library" aria-label="Library">
       <div class="lib-hero">
-        <div class="lib-hero-title">My Library</div>
-        <div class="lib-hero-sub">Liked songs, playlists & history</div>
+        <div class="lib-hero-row">
+          <div>
+            <div class="lib-hero-title">My Library</div>
+            <div class="lib-hero-sub">Liked songs, playlists &amp; history</div>
+          </div>
+          <button class="icon-btn lib-hero-set" id="btn-lib-settings" aria-label="Settings"><i class="ti ti-adjustments"></i></button>
+        </div>
       </div>
       <div class="lib-stats">
         <div class="lib-stat" id="stat-card-liked" role="button" tabindex="0"><div class="lib-stat-n" id="stat-liked">0</div><div class="lib-stat-l">Liked</div></div>
@@ -286,9 +291,24 @@
 
       <!-- Playlists -->
       <div class="sec-hdr" id="sec-playlists">
-        <span class="sec-title">Playlists</span>
-        <span class="sec-more" id="new-playlist-btn">+ New</span>
+        <span class="sec-title" id="pl-sec-title">Albums &amp; Playlists</span>
+        <span class="sec-actions">
+          <span class="sec-more" id="new-folder-btn"><i class="ti ti-folder-plus"></i> Folder</span>
+          <span class="sec-more" id="new-playlist-btn">+ New</span>
+        </span>
       </div>
+
+      <!-- Breadcrumb shown when inside a folder -->
+      <div class="crumb" id="pl-crumb" style="display:none">
+        <button class="crumb-back" id="crumb-back"><i class="ti ti-arrow-left"></i></button>
+        <span class="crumb-icon"><i class="ti ti-folder-filled"></i></span>
+        <span class="crumb-name" id="crumb-name">Folder</span>
+        <button class="crumb-menu" id="crumb-menu" aria-label="Folder options"><i class="ti ti-dots"></i></button>
+      </div>
+
+      <!-- Folders (root level only) -->
+      <div id="folder-grid" class="folder-grid"></div>
+
       <div id="playlist-grid" class="pl-grid"></div>
 
       <div class="section-divider"></div>
@@ -562,6 +582,11 @@
       fallback, rotating logs, and graceful degradation throughout.</p>
     </div>
 
+    <div class="about-block">
+      <div class="about-block-h"><i class="ti ti-device-mobile"></i> Playback &amp; install</div>
+      <div id="install-state" class="install-box"></div>
+    </div>
+
     <!-- Your data: backup & restore -->
     <div class="about-block">
       <div class="about-block-h"><i class="ti ti-database-heart"></i> Your data</div>
@@ -656,9 +681,43 @@
   </div>
 </div>
 
+<!-- ── Move to folder picker ──────────────────────────────────────────── -->
+<div class="sheet" id="folder-pick-sheet" role="dialog" aria-modal="true" aria-label="Move to folder">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header">
+    <button class="icon-btn" id="folder-pick-close" aria-label="Close"><i class="ti ti-x"></i></button>
+    <span class="sheet-title">Move to folder</span>
+    <button class="icon-btn" id="folder-pick-new" aria-label="New folder"><i class="ti ti-plus"></i></button>
+  </div>
+  <div class="sheet-body">
+    <div id="folder-pick-list" class="pl-select-list"></div>
+  </div>
+</div>
+
+<!-- ── Folder actions ─────────────────────────────────────────────────── -->
+<div class="modal-back" id="folder-menu" role="dialog" aria-modal="true" aria-label="Folder options">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="folder-menu-title">Folder</div>
+    <div class="modal-opts" id="folder-menu-opts"></div>
+    <button class="modal-cancel" id="folder-menu-cancel">Cancel</button>
+  </div>
+</div>
+
+<!-- ── Create / rename folder ─────────────────────────────────────────── -->
+<div class="modal-back" id="folder-name-modal" role="dialog" aria-modal="true" aria-label="Folder name">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="folder-name-title">New Folder</div>
+    <input class="modal-input" id="folder-name-input" type="text" placeholder="Folder name…" maxlength="60">
+    <button class="modal-primary" id="folder-name-confirm">Create Folder</button>
+    <button class="modal-cancel" id="folder-name-cancel">Cancel</button>
+  </div>
+</div>
+
 <!-- ── Toast ──────────────────────────────────────────────────────────── -->
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=24"></script>
+<script src="/static/app.js?v=26"></script>
 </body>
 </html>

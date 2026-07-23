@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v24";
+const APP_VERSION = "v26";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -111,7 +111,12 @@ function greeting() {
 
 /* ── Navigation ─────────────────────────────────────────────────────────── */
 function goto(page) {
+  const from = S.page;
   S.page = page;
+  // Feed the Android back stack unless we're replaying it
+  if (!window._ndSilentNav && typeof window.ndNavPage === "function") {
+    window.ndNavPage(from, page);
+  }
   $$(".page").forEach(el => el.classList.remove("active"));
   $$(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.page === page));
   $(`page-${page}`).classList.add("active");
@@ -152,6 +157,9 @@ function trackHTML(t, idx, numbered=true) {
       ${t.duration ? `<span class="t-dur">${fmt(t.duration)}</span>` : ""}
       <button class="t-like${liked?" liked":""}" data-id="${esc(t.id)}" aria-label="${liked?"Unlike":"Like"}">
         <i class="ti ti-heart${liked?"-filled":""}"></i>
+      </button>
+      <button class="t-menu" data-menu="${esc(t.id)}" aria-label="More options">
+        <i class="ti ti-dots-vertical"></i>
       </button>
     </div>
   </div>`;
@@ -534,13 +542,24 @@ async function play(track, queue=S.queue, idx=-1) {
   if (S.page === "home") { renderHomeLibraryShelves(); applyShelfVisibility(); }
 
   try {
-    window.ndlog && window.ndlog(`  fetching /api/song/${track.id}`);
-    const r = await fetch(`/api/song/${track.id}`);
-    const d = await r.json();
-    window.ndlog && window.ndlog(`  got response: url=${(d.url||"").slice(0,40)}`);
+    let d, streamUrl;
+    // Use the URL we lined up earlier if it's for this exact track — this is
+    // what lets the next song start while the app is backgrounded and the
+    // Termux server may be throttled.
+    if (S.nextUrl && S.nextUrl.id === track.id && S.nextUrl.url) {
+      window.ndlog && window.ndlog(`  using prefetched url for ${track.id}`);
+      d = { url: S.nextUrl.url };
+      streamUrl = S.nextUrl.url;
+      S.nextUrl = null;
+    } else {
+      window.ndlog && window.ndlog(`  fetching /api/song/${track.id}`);
+      const r = await fetch(`/api/song/${track.id}`);
+      d = await r.json();
+      window.ndlog && window.ndlog(`  got response: url=${(d.url||"").slice(0,40)}`);
+      streamUrl = d.url || "";
+    }
 
     // Validate stream URL — must be absolute https:// to avoid 404 on local server
-    const streamUrl = d.url || "";
     if (!streamUrl || !streamUrl.startsWith("http")) {
       window.ndlog && window.ndlog(`  BAD URL: "${streamUrl}"`);
       throw new Error("no_stream_url");
@@ -876,16 +895,26 @@ function renderLibrary() {
 
 function renderPlaylists() {
   const grid = $("playlist-grid");
-  if (!S.playlists.length) {
-    grid.innerHTML = `<div style="grid-column:1/-1"><div class="state-msg" style="padding:20px"><i class="ti ti-playlist"></i><p>No playlists yet</p></div></div>`;
+  if (typeof renderFolders === "function") renderFolders();
+  const items = typeof visiblePlaylists === "function" ? visiblePlaylists() : S.playlists;
+
+  if (!items.length) {
+    const inFolder = typeof S !== "undefined" && S.viewFolder;
+    grid.innerHTML = `<div style="grid-column:1/-1"><div class="state-msg" style="padding:20px">
+      <i class="ti ti-playlist"></i>
+      <p>${inFolder
+          ? "This folder is empty.<br>Drag an album onto it, or use ⋮ → Move to folder."
+          : (S.playlists.length ? "Every album is filed in a folder." : "No albums or playlists yet")}</p>
+    </div></div>`;
     return;
   }
+
   // Pinned playlists always sort to the top
-  const ordered = [...S.playlists].sort((a,b) => (b.pinned?1:0) - (a.pinned?1:0));
+  const ordered = [...items].sort((a,b) => (b.pinned?1:0) - (a.pinned?1:0));
   grid.innerHTML = ordered.map(pl => {
     const first = pl.songs?.[0];
     return `<div class="pl-card" data-plid="${esc(pl.id)}">
-      <button class="pl-card-menu" data-plmenu="${esc(pl.id)}" aria-label="Playlist options"><i class="ti ti-dots"></i></button>
+      <button class="pl-card-menu" data-plmenu="${esc(pl.id)}" aria-label="Album options"><i class="ti ti-dots"></i></button>
       ${pl.pinned ? `<span class="pin-badge"><i class="ti ti-pin-filled"></i></span>` : ""}
       <div class="pl-card-img">
         ${first?.image ? `<img src="${esc(first.image)}" alt="">` : "🎵"}
@@ -901,6 +930,7 @@ function renderPlaylists() {
       openPlaylistDetail(el.dataset.plid);
     })
   );
+  if (typeof initAlbumDragToFolder === "function") initAlbumDragToFolder();
 }
 
 $("liked-shuffle").addEventListener("click", () => {
@@ -1501,6 +1531,7 @@ const aboutOpen = $("about-open");
 if (aboutOpen) aboutOpen.addEventListener("click", () => {
   $("home-settings-sheet").classList.remove("open");
   $("about-sheet").classList.add("open");
+  if (typeof renderInstallState === "function") renderInstallState();
 });
 const aboutClose = $("about-close");
 if (aboutClose) aboutClose.addEventListener("click", () => $("about-sheet").classList.remove("open"));
@@ -1635,12 +1666,16 @@ function renderPlaylistDetail(pl) {
          : `<span class="t-num">${i+1}</span>`}
        <div class="t-img">${t.image?`<img src="${esc(t.image)}" alt="" loading="lazy">`:'<span class="t-img-ph">🎵</span>'}</div>
        <div class="t-info"><div class="t-title">${esc(t.title)}</div><div class="t-meta">${esc(t.artist||"")}</div></div>
-       <span class="t-dur">${fmt(t.duration)}</span>
+       <div class="t-right">
+         <span class="t-dur">${fmt(t.duration)}</span>
+         ${S.plEditMode ? "" : `<button class="t-menu" data-menu="${esc(t.id)}" aria-label="More options"><i class="ti ti-dots-vertical"></i></button>`}
+       </div>
      </div>`).join("");
 
   list.querySelectorAll(".pl-row").forEach(row => {
     row.addEventListener("click", e => {
       if (e.target.closest(".pl-grip")) return;   // grip is for dragging
+      if (e.target.closest(".t-menu")) return;    // handled by the menu binding
       const i = parseInt(row.dataset.idx);
       if (isNaN(i) || !pl.songs[i]) return;
       if (S.plEditMode) {
@@ -1879,7 +1914,7 @@ const BACKUP_KEYS = [
   "nd_liked", "nd_pls", "nd_history", "nd_homecfg",
   "nd_shuffle", "nd_repeat", "nd_ai_anecdote",
   "nd_shelf_touch", "nd_collapsed",
-  "nd_pinned", "nd_theme",
+  "nd_pinned", "nd_theme", "nd_folders",
 ];
 
 function exportData() {
@@ -2271,11 +2306,12 @@ function openPlMenu(plid) {
   S.plMenuId = plid;
   $("pl-menu-title").textContent = pl.name;
   $("pl-menu-opts").innerHTML = `
+    <div class="modal-opt" data-plact="movefolder"><i class="ti ti-folder-symlink"></i>Move to folder…</div>
     <div class="modal-opt" data-plact="rename"><i class="ti ti-pencil"></i>Rename</div>
     <div class="modal-opt" data-plact="duplicate"><i class="ti ti-copy"></i>Duplicate</div>
     <div class="modal-opt" data-plact="pin"><i class="ti ti-pin${pl.pinned?"-off":""}"></i>${pl.pinned?"Unpin":"Pin to top"}</div>
     <div class="modal-opt" data-plact="playnext"><i class="ti ti-player-track-next"></i>Queue all songs</div>
-    <div class="modal-opt danger" data-plact="delete"><i class="ti ti-trash"></i>Delete playlist</div>`;
+    <div class="modal-opt danger" data-plact="delete"><i class="ti ti-trash"></i>Delete album</div>`;
   plMenuSheet.classList.add("open");
 }
 function closePlMenu() { plMenuSheet.classList.remove("open"); }
@@ -2290,6 +2326,9 @@ $("pl-menu-opts").addEventListener("click", e => {
   if (!pl) return;
 
   switch (opt.dataset.plact) {
+    case "movefolder":
+      if (typeof openFolderPicker === "function") openFolderPicker(pl.id);
+      break;
     case "rename": {
       // Reuse the create-playlist modal in rename mode
       S.renamePlId = pl.id;
@@ -2324,6 +2363,11 @@ $("pl-menu-opts").addEventListener("click", e => {
     case "delete": {
       if (!confirm(`Delete "${pl.name}"? This can't be undone.`)) break;
       S.playlists = S.playlists.filter(p => p.id !== pl.id);
+      // Drop it out of any folder too, so counts stay honest
+      if (S.folders) {
+        for (const f of S.folders) f.plIds = f.plIds.filter(id => id !== pl.id);
+        saveFolders();
+      }
       save();
       $("pl-detail-sheet").classList.remove("open");
       renderLibrary(); renderHomeLibraryShelves();
@@ -2622,4 +2666,631 @@ function initPlaylistReorder(pl) {
       document.addEventListener("pointerup", onUp);
     });
   });
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   v25: Folders — group albums/playlists, drag one onto a folder to file it
+   Deliberately one level deep. Deep trees are where personal libraries go
+   to die; a single shelf layer covers "all my Ram Charan albums together"
+   without turning the Library into a file manager.
+═══════════════════════════════════════════════════════════════════════ */
+
+S.folders    = LS.get("nd_folders", []);   // [{id,name,plIds:[]}]
+S.viewFolder = null;                        // null = root
+
+function saveFolders() { LS.set("nd_folders", S.folders); }
+
+function folderOf(plid) {
+  return S.folders.find(f => f.plIds.includes(plid)) || null;
+}
+
+function movePlaylistToFolder(plid, folderId) {
+  // A playlist lives in at most one folder — pull it out of any other first
+  for (const f of S.folders) f.plIds = f.plIds.filter(id => id !== plid);
+  if (folderId) {
+    const f = S.folders.find(x => x.id === folderId);
+    if (f && !f.plIds.includes(plid)) f.plIds.push(plid);
+  }
+  saveFolders();
+}
+
+function createFolder(name, withPlaylist = null) {
+  const f = { id: uid(), name: name.trim(), plIds: [] };
+  S.folders.unshift(f);
+  if (withPlaylist) movePlaylistToFolder(withPlaylist, f.id);
+  saveFolders();
+  return f;
+}
+
+/* ── Render folders + the playlists for the current level ────────────── */
+function renderFolders() {
+  const grid = $("folder-grid");
+  const crumb = $("pl-crumb");
+  const title = $("pl-sec-title");
+  if (!grid) return;
+
+  if (S.viewFolder) {
+    // Inside a folder: hide the folder grid, show the breadcrumb
+    const f = S.folders.find(x => x.id === S.viewFolder);
+    if (!f) { S.viewFolder = null; return renderFolders(); }
+    grid.innerHTML = "";
+    if (crumb) {
+      crumb.style.display = "flex";
+      $("crumb-name").textContent = f.name;
+    }
+    if (title) title.textContent = "In this folder";
+    return;
+  }
+
+  if (crumb) crumb.style.display = "none";
+  if (title) title.textContent = "Albums & Playlists";
+
+  if (!S.folders.length) { grid.innerHTML = ""; return; }
+  grid.innerHTML = S.folders.map(f => {
+    const n = f.plIds.filter(id => S.playlists.some(p => p.id === id)).length;
+    return `<div class="folder-card" data-folder="${esc(f.id)}">
+      <div class="folder-ico"><i class="ti ti-folder-filled"></i></div>
+      <div class="folder-meta">
+        <div class="folder-name">${esc(f.name)}</div>
+        <div class="folder-count">${n} album${n!==1?"s":""}</div>
+      </div>
+    </div>`;
+  }).join("");
+
+  grid.querySelectorAll(".folder-card").forEach(el => {
+    el.addEventListener("click", () => {
+      S.viewFolder = el.dataset.folder;
+      renderFolders(); renderPlaylists();
+    });
+    // Long-press a folder for its options
+    let t = null;
+    el.addEventListener("pointerdown", () => {
+      t = setTimeout(() => openFolderMenu(el.dataset.folder), 480);
+    }, { passive: true });
+    const cancel = () => { clearTimeout(t); t = null; };
+    el.addEventListener("pointerup", cancel, { passive: true });
+    el.addEventListener("pointermove", cancel, { passive: true });
+    el.addEventListener("pointercancel", cancel, { passive: true });
+  });
+}
+
+/* Which playlists show at the current level */
+function visiblePlaylists() {
+  if (S.viewFolder) {
+    const f = S.folders.find(x => x.id === S.viewFolder);
+    if (!f) return S.playlists;
+    return S.playlists.filter(p => f.plIds.includes(p.id));
+  }
+  // Root shows only playlists that aren't filed in a folder
+  const filed = new Set(S.folders.flatMap(f => f.plIds));
+  return S.playlists.filter(p => !filed.has(p.id));
+}
+
+/* ── Breadcrumb controls ─────────────────────────────────────────────── */
+const crumbBack = $("crumb-back");
+if (crumbBack) crumbBack.addEventListener("click", () => {
+  S.viewFolder = null; renderFolders(); renderPlaylists();
+});
+const crumbMenu = $("crumb-menu");
+if (crumbMenu) crumbMenu.addEventListener("click", () => {
+  if (S.viewFolder) openFolderMenu(S.viewFolder);
+});
+
+/* ── Folder action sheet ─────────────────────────────────────────────── */
+function openFolderMenu(fid) {
+  const f = S.folders.find(x => x.id === fid);
+  if (!f) return;
+  S.menuFolderId = fid;
+  $("folder-menu-title").textContent = f.name;
+  $("folder-menu-opts").innerHTML = `
+    <div class="modal-opt" data-fact="open"><i class="ti ti-folder-open"></i>Open folder</div>
+    <div class="modal-opt" data-fact="rename"><i class="ti ti-pencil"></i>Rename folder</div>
+    <div class="modal-opt" data-fact="playall"><i class="ti ti-player-play"></i>Play everything inside</div>
+    <div class="modal-opt danger" data-fact="delete"><i class="ti ti-folder-x"></i>Delete folder (keeps albums)</div>`;
+  $("folder-menu").classList.add("open");
+}
+$("folder-menu-cancel").addEventListener("click", () => $("folder-menu").classList.remove("open"));
+$("folder-menu").addEventListener("click", e => {
+  if (e.target === $("folder-menu")) $("folder-menu").classList.remove("open");
+});
+
+$("folder-menu-opts").addEventListener("click", e => {
+  const opt = e.target.closest(".modal-opt[data-fact]");
+  if (!opt) return;
+  const f = S.folders.find(x => x.id === S.menuFolderId);
+  $("folder-menu").classList.remove("open");
+  if (!f) return;
+
+  switch (opt.dataset.fact) {
+    case "open":
+      S.viewFolder = f.id; renderFolders(); renderPlaylists();
+      break;
+    case "rename":
+      S.renameFolderId = f.id;
+      $("folder-name-title").textContent = "Rename Folder";
+      $("folder-name-confirm").textContent = "Save";
+      $("folder-name-input").value = f.name;
+      $("folder-name-modal").classList.add("open");
+      setTimeout(() => { const i = $("folder-name-input"); i.focus(); i.select(); }, 100);
+      break;
+    case "playall": {
+      const songs = [];
+      for (const id of f.plIds) {
+        const pl = S.playlists.find(p => p.id === id);
+        if (pl) for (const s of pl.songs) if (!songs.some(x => x.id === s.id)) songs.push({...s});
+      }
+      if (!songs.length) { toast("Nothing in this folder yet"); break; }
+      S.queue = songs; S.queueIdx = 0;
+      play(songs[0], songs, 0);
+      toast(`Playing ${songs.length} songs from "${f.name}"`);
+      break;
+    }
+    case "delete":
+      // Deleting a folder never deletes music — the albums return to the top level
+      if (!confirm(`Delete the folder "${f.name}"?\n\nThe albums inside stay in your library.`)) break;
+      S.folders = S.folders.filter(x => x.id !== f.id);
+      saveFolders();
+      if (S.viewFolder === f.id) S.viewFolder = null;
+      renderFolders(); renderPlaylists();
+      toast(`Folder deleted — albums kept`);
+      break;
+  }
+});
+
+/* ── Create / rename folder modal ────────────────────────────────────── */
+function openNewFolder(withPlaylist = null) {
+  S.renameFolderId = null;
+  S.newFolderFor = withPlaylist;
+  $("folder-name-title").textContent = "New Folder";
+  $("folder-name-confirm").textContent = "Create Folder";
+  $("folder-name-input").value = "";
+  $("folder-name-modal").classList.add("open");
+  setTimeout(() => $("folder-name-input").focus(), 100);
+}
+const newFolderBtn = $("new-folder-btn");
+if (newFolderBtn) newFolderBtn.addEventListener("click", () => openNewFolder());
+
+$("folder-name-cancel").addEventListener("click", () => {
+  $("folder-name-modal").classList.remove("open");
+  S.renameFolderId = null; S.newFolderFor = null;
+});
+$("folder-name-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") $("folder-name-confirm").click();
+});
+$("folder-name-confirm").addEventListener("click", () => {
+  const name = $("folder-name-input").value.trim();
+  if (!name) return;
+  if (S.renameFolderId) {
+    const f = S.folders.find(x => x.id === S.renameFolderId);
+    if (f) { f.name = name; saveFolders(); toast("Folder renamed"); }
+    S.renameFolderId = null;
+  } else {
+    createFolder(name, S.newFolderFor);
+    toast(S.newFolderFor ? `Moved into "${name}"` : `Folder "${name}" created`);
+    S.newFolderFor = null;
+    $("folder-pick-sheet").classList.remove("open");
+  }
+  $("folder-name-modal").classList.remove("open");
+  renderFolders(); renderPlaylists();
+});
+
+/* ── "Move to folder" picker ─────────────────────────────────────────── */
+function openFolderPicker(plid) {
+  S.movePlId = plid;
+  const list = $("folder-pick-list");
+  const current = folderOf(plid);
+  const rows = [];
+
+  if (current) {
+    rows.push(`<div class="pl-select-item" data-fid="">
+      <div class="pl-select-thumb" style="background:var(--gray-200);color:var(--gray-600)"><i class="ti ti-folder-off"></i></div>
+      <div><div class="pl-select-name">Remove from "${esc(current.name)}"</div>
+      <div class="pl-select-count">Back to the top level</div></div></div>`);
+  }
+  for (const f of S.folders) {
+    if (current && f.id === current.id) continue;
+    const n = f.plIds.length;
+    rows.push(`<div class="pl-select-item" data-fid="${esc(f.id)}">
+      <div class="pl-select-thumb"><i class="ti ti-folder-filled"></i></div>
+      <div><div class="pl-select-name">${esc(f.name)}</div>
+      <div class="pl-select-count">${n} album${n!==1?"s":""}</div></div></div>`);
+  }
+
+  list.innerHTML = rows.length ? rows.join("")
+    : `<div class="state-msg"><i class="ti ti-folder"></i><p>No folders yet.<br>Tap + to make one.</p></div>`;
+
+  list.querySelectorAll(".pl-select-item").forEach(el => {
+    el.addEventListener("click", () => {
+      const fid = el.dataset.fid || null;
+      movePlaylistToFolder(S.movePlId, fid);
+      $("folder-pick-sheet").classList.remove("open");
+      renderFolders(); renderPlaylists();
+      toast(fid ? "Moved to folder" : "Moved out of folder");
+    });
+  });
+  $("folder-pick-sheet").classList.add("open");
+}
+$("folder-pick-close").addEventListener("click", () => $("folder-pick-sheet").classList.remove("open"));
+$("folder-pick-new").addEventListener("click", () => openNewFolder(S.movePlId));
+
+/* ── Drag an album card onto a folder to file it ─────────────────────
+   Touch-first: press and hold an album, a ghost follows your finger, and
+   folders light up as you pass over them. Mouse users get the same via
+   pointer events, so there's one code path to keep honest. */
+function initAlbumDragToFolder() {
+  const grid = $("playlist-grid");
+  if (!grid || grid._dragBound) return;
+  grid._dragBound = true;
+
+  const HOLD = 420, MOVE_TOL = 14;
+  let timer = null, card = null, ghost = null, dragging = false;
+  let sx = 0, sy = 0, plid = null;
+
+  const cleanup = () => {
+    clearTimeout(timer); timer = null;
+    if (ghost) { ghost.remove(); ghost = null; }
+    if (card) card.classList.remove("dragging-card");
+    document.querySelectorAll(".folder-card.drop-hot").forEach(f => f.classList.remove("drop-hot"));
+    document.removeEventListener("pointermove", onDocMove);
+    document.removeEventListener("pointerup", onDocUp);
+    document.removeEventListener("pointercancel", cleanup);
+    card = null; dragging = false; plid = null;
+  };
+
+  const makeGhost = (fromCard, x, y) => {
+    const img = fromCard.querySelector(".pl-card-img img");
+    ghost = document.createElement("div");
+    ghost.className = "drag-ghost";
+    ghost.innerHTML = img ? `<img src="${img.src}" alt="">` : `<div class="ph"></div>`;
+    ghost.style.left = x + "px";
+    ghost.style.top  = y + "px";
+    document.body.appendChild(ghost);
+  };
+
+  // Tracked on document, not the grid: once the finger crosses out of the
+  // album grid and over a folder card the grid stops seeing pointer events,
+  // which is exactly when we most need them.
+  function onDocMove(e) {
+    if (!card) return;
+    if (!dragging) {
+      if (Math.abs(e.clientX - sx) > MOVE_TOL || Math.abs(e.clientY - sy) > MOVE_TOL) cleanup();
+      return;
+    }
+    e.preventDefault?.();
+    if (ghost) { ghost.style.left = e.clientX + "px"; ghost.style.top = e.clientY + "px"; }
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest(".folder-card");
+    document.querySelectorAll(".folder-card").forEach(f =>
+      f.classList.toggle("drop-hot", f === over));
+  }
+
+  function onDocUp(e) {
+    if (!dragging) { cleanup(); return; }
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest(".folder-card");
+    const targetId = over?.dataset.folder || null;
+    const droppedPl = plid;
+    cleanup();
+    if (targetId && droppedPl) {
+      const f = S.folders.find(x => x.id === targetId);
+      movePlaylistToFolder(droppedPl, targetId);
+      renderFolders(); renderPlaylists();
+      toast(`Moved into "${f ? f.name : "folder"}"`);
+    }
+  }
+
+  grid.addEventListener("pointerdown", e => {
+    const c = e.target.closest(".pl-card[data-plid]");
+    if (!c || e.target.closest(".pl-card-menu")) return;
+    card = c; plid = c.dataset.plid;
+    sx = e.clientX; sy = e.clientY;
+    document.addEventListener("pointermove", onDocMove, { passive: false });
+    document.addEventListener("pointerup", onDocUp, { passive: true });
+    document.addEventListener("pointercancel", cleanup, { passive: true });
+    timer = setTimeout(() => {
+      // Only worth dragging if there's somewhere to drop
+      if (!S.folders.length) { cleanup(); return; }
+      dragging = true;
+      card.classList.add("dragging-card");
+      makeGhost(card, sx, sy);
+      if (navigator.vibrate) { try { navigator.vibrate(14); } catch {} }
+    }, HOLD);
+  }, { passive: true });
+
+  // Suppress the click that would otherwise open the album after a drag
+  grid.addEventListener("click", e => {
+    if (dragging) { e.stopImmediatePropagation(); e.preventDefault(); }
+  }, true);
+}
+
+/* ── Library settings entry point (Appearance lives here too now) ────── */
+const libSet = $("btn-lib-settings");
+if (libSet) libSet.addEventListener("click", openHomeSettings);
+
+/* ═══════════════════════════════════════════════════════════════════════
+   v25: playback resilience + install awareness
+═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Stream recovery ─────────────────────────────────────────────────
+   On a phone-hosted app the network drops in and out. If the stream dies
+   while the user still wants audio, re-attach the source and seek back to
+   where we were, rather than silently stopping. We only do this when the
+   user's intent is "playing" — an OS pause (phone call, audio focus lost)
+   must be respected, not fought. */
+S.wantPlaying = false;
+let _recoverTries = 0;
+
+audio.addEventListener("playing", () => { _recoverTries = 0; S.wantPlaying = true; });
+
+function tryRecoverStream() {
+  if (!S.wantPlaying || !S.track || S.loading) return;
+  if (_recoverTries >= 2) return;              // don't loop forever
+  if (!audio.src) return;
+  _recoverTries++;
+  const at = audio.currentTime || 0;
+  const src = audio.src;
+  window.ndlog && window.ndlog(`stream recovery attempt ${_recoverTries} @${at.toFixed(1)}s`);
+  try {
+    audio.load();
+    audio.src = src;
+    audio.currentTime = at;
+    audio.play().catch(() => {});
+  } catch {}
+}
+
+audio.addEventListener("error",   () => setTimeout(tryRecoverStream, 800));
+audio.addEventListener("stalled", () => setTimeout(tryRecoverStream, 2500));
+
+// Coming back to the foreground: if the user still wants audio but the
+// element got stopped in the background, pick it back up where it left off.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  if (S.wantPlaying && audio.paused && audio.src && !S.loading) {
+    audio.play().catch(() => {});
+  }
+});
+
+// Track user intent so recovery never fights a deliberate pause
+const _origTogglePlay = typeof togglePlay === "function" ? togglePlay : null;
+audio.addEventListener("play",  () => { S.wantPlaying = true;  });
+$("ctrl-play")?.addEventListener("click", () => { S.wantPlaying = audio.paused; });
+$("mini-play")?.addEventListener("click", () => { S.wantPlaying = audio.paused; });
+
+/* ── Installed vs browser tab ────────────────────────────────────────
+   Running inside a Chrome tab is the cause of two things people notice:
+   the media notification shows Chrome's icon (a website can't override
+   it — only an installed app can), and Android freezes background tabs
+   far more aggressively than installed apps, so playback stops when you
+   minimise. Installed to the home screen, both go away. We surface this
+   once, in About, rather than nagging. */
+function isInstalledPWA() {
+  return window.matchMedia("(display-mode: standalone)").matches
+      || window.matchMedia("(display-mode: fullscreen)").matches
+      || window.matchMedia("(display-mode: minimal-ui)").matches
+      || navigator.standalone === true;
+}
+
+function renderInstallState() {
+  const box = $("install-state");
+  if (!box) return;
+  const rows = installDiagnostics();
+  const installed = typeof isInstalledPWA === "function" && isInstalledPWA();
+
+  const checks = rows.map(r =>
+    `<li class="${r.ok ? "ok" : "no"}"><i class="ti ti-${r.ok ? "circle-check" : "circle-x"}"></i>${r.label}</li>`
+  ).join("");
+
+  if (installed) {
+    box.className = "install-box ok";
+    box.innerHTML = `<div class="install-h"><i class="ti ti-circle-check"></i> Installed as an app</div>
+      <ul class="check-list">${checks}</ul>
+      <p class="about-p">Background playback and the Naada icon in your media
+      notification both work as intended.</p>`;
+    return;
+  }
+
+  box.className = "install-box warn";
+  box.innerHTML = `<div class="install-h"><i class="ti ti-alert-triangle"></i> Running in a browser tab</div>
+    <ul class="check-list">${checks}</ul>
+    <p class="about-p">While Naada runs as a Chrome tab, two things stay broken
+    no matter what the app does:</p>
+    <ul class="about-list">
+      <li>Music stops when you minimise — Android freezes background browser
+      tabs far more aggressively than installed apps.</li>
+      <li>Your media notification shows Chrome's icon. A web page cannot
+      override that badge; only an installed app can.</li>
+    </ul>
+    <button class="modal-primary" id="install-now" style="margin-top:10px${_installPrompt ? "" : ";display:none"}">
+      <i class="ti ti-download"></i> Install Naada
+    </button>
+    <p class="about-p" style="margin-top:8px">If that button isn't showing,
+    Chrome hasn't judged the app installable — almost always the HTTPS
+    certificate. Use <b>Chrome ⋮ → Add to Home Screen</b>; if the result still
+    opens with a browser address bar, the certificate needs fixing (see
+    DEPLOY.md).</p>`;
+
+  const btn = $("install-now");
+  if (btn) btn.addEventListener("click", doInstall);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   v26: Android back button, visible row menus, install prompt, prefetch
+═══════════════════════════════════════════════════════════════════════ */
+
+/* ── The ⋮ on every song row ──────────────────────────────────────────
+   Delete used to be reachable only by long-press, which is a gesture you
+   have to already know about. A hidden gesture isn't a UI. The same menu
+   is now one visible tap away on every row; long-press still works for
+   anyone who's learned it. */
+document.addEventListener("click", e => {
+  const btn = e.target.closest(".t-menu[data-menu]");
+  if (!btn) return;
+  e.stopPropagation();
+  e.preventDefault();
+  const row = btn.closest(".track, .pl-row");
+  const ctx = row ? tmContextOf(row) : "browse";
+  const track = tmFindTrack(btn.dataset.menu, ctx);
+  if (track) openTrackMenu(track, ctx);
+}, true);
+
+/* ── Android back button ─────────────────────────────────────────────
+   The app had no History API integration at all, so the system back
+   gesture went straight past it and minimised the whole app. Now every
+   sheet, modal and tab change puts an entry on the history stack, and
+   back unwinds them one at a time — closing the top sheet, then stepping
+   back through tabs, and only exiting from Home with nothing open. */
+(function initBackNav() {
+  const OVERLAY_SEL = ".sheet, .modal-back, .now-screen";
+  const stack = [];        // overlays currently open, in the order opened
+  let syncingBack = false; // true while we're unwinding history ourselves
+
+  try { history.replaceState({ nd: "root" }, ""); } catch {}
+
+  function pushEntry(tag) {
+    try { history.pushState({ nd: tag }, ""); } catch {}
+  }
+
+  // Watch every overlay for the .open class rather than wrapping ~20 call
+  // sites — this also covers any overlay added later without extra wiring.
+  const obs = new MutationObserver(muts => {
+    for (const m of muts) {
+      const el = m.target;
+      const open = el.classList.contains("open");
+      const at = stack.indexOf(el);
+
+      if (open && at === -1) {
+        stack.push(el);
+        pushEntry(el.id || "overlay");
+      } else if (!open && at !== -1) {
+        stack.splice(at, 1);
+        // Closed by a button rather than by back — drop the matching
+        // history entry so the stack doesn't drift out of step.
+        if (!syncingBack) {
+          syncingBack = true;
+          try { history.back(); } catch { syncingBack = false; }
+        }
+      }
+    }
+  });
+  document.querySelectorAll(OVERLAY_SEL).forEach(el =>
+    obs.observe(el, { attributes: true, attributeFilter: ["class"] }));
+
+  // Tab changes are history too: back from Library lands on Home
+  const pageStack = [];
+  window.ndNavPage = function (from, to) {
+    if (from && from !== to) {
+      pageStack.push(from);
+      pushEntry("page:" + to);
+    }
+  };
+
+  window.addEventListener("popstate", () => {
+    // This popstate is the one we triggered ourselves after a UI close
+    if (syncingBack) { syncingBack = false; return; }
+
+    // 1. Close the topmost open overlay
+    const top = stack[stack.length - 1];
+    if (top) {
+      syncingBack = true;             // stop the observer re-firing history.back
+      top.classList.remove("open");
+      stack.pop();
+      syncingBack = false;
+      return;
+    }
+
+    // 2. Otherwise step back through tabs
+    if (pageStack.length) {
+      const prev = pageStack.pop();
+      if (typeof gotoSilent === "function") gotoSilent(prev);
+      return;
+    }
+
+    // 3. Nothing left to unwind — let the system have the back press,
+    //    which minimises the app the way any Android app would.
+  });
+})();
+
+/* goto() that doesn't add to history — used when replaying the back stack */
+function gotoSilent(page) {
+  if (typeof goto !== "function") return;
+  window._ndSilentNav = true;
+  try { goto(page); } finally { window._ndSilentNav = false; }
+}
+
+/* ── Prefetch the next track's stream URL ────────────────────────────
+   The audio itself streams from the CDN, but the URL for each song comes
+   from the Termux server. If the phone backgrounds the app and Android
+   throttles Termux, that lookup can fail exactly at a track change — the
+   music stops between songs rather than mid-song. Fetching the next URL
+   while we're still in the foreground removes that dependency. */
+S.nextUrl = null;
+
+async function prefetchNextTrack() {
+  try {
+    if (!S.queue?.length) return;
+    const nextIdx = S.shuffle ? -1 : S.queueIdx + 1;
+    const nxt = nextIdx >= 0 ? S.queue[nextIdx] : null;
+    if (!nxt || S.nextUrl?.id === nxt.id) return;
+    const r = await fetch(`/api/song/${nxt.id}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.url) {
+      S.nextUrl = { id: nxt.id, url: d.url };
+      window.ndlog && window.ndlog(`prefetched next: ${nxt.title}`);
+    }
+  } catch { /* best effort only */ }
+}
+
+// Once a song is properly under way, quietly line up the one after it
+audio.addEventListener("playing", () => setTimeout(prefetchNextTrack, 4000));
+
+/* ── Install to home screen ──────────────────────────────────────────
+   Chrome fires beforeinstallprompt only when the app is actually
+   installable (valid HTTPS, manifest, service worker). Capturing it lets
+   us offer a real Install button instead of telling people to hunt
+   through a browser menu — and its absence is itself a useful signal,
+   which the diagnostics below report honestly. */
+let _installPrompt = null;
+
+window.addEventListener("beforeinstallprompt", e => {
+  e.preventDefault();
+  _installPrompt = e;
+  if (typeof renderInstallState === "function") renderInstallState();
+  const btn = $("install-now");
+  if (btn) btn.style.display = "";
+});
+
+window.addEventListener("appinstalled", () => {
+  _installPrompt = null;
+  toast("Naada installed — open it from your home screen");
+  if (typeof renderInstallState === "function") renderInstallState();
+});
+
+async function doInstall() {
+  if (!_installPrompt) {
+    toast("Use Chrome ⋮ → Add to Home Screen");
+    return;
+  }
+  _installPrompt.prompt();
+  try { await _installPrompt.userChoice; } catch {}
+  _installPrompt = null;
+}
+
+/* Honest diagnostics — each line is measured, not assumed */
+function installDiagnostics() {
+  const rows = [];
+  const secure = window.isSecureContext;
+  const sw = !!navigator.serviceWorker?.controller;
+  const installed = typeof isInstalledPWA === "function" && isInstalledPWA();
+  rows.push({ ok: installed, label: installed
+      ? "Running as an installed app"
+      : "Running in a browser tab" });
+  rows.push({ ok: secure, label: secure
+      ? "Secure context (HTTPS or localhost)"
+      : "Not a secure context — install is blocked" });
+  rows.push({ ok: sw, label: sw
+      ? "Service worker active"
+      : "Service worker not controlling this page" });
+  rows.push({ ok: !!_installPrompt || installed, label: (_installPrompt || installed)
+      ? "Chrome reports the app as installable"
+      : "Chrome has not offered an install prompt" });
+  return rows;
 }

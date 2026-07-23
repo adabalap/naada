@@ -1,5 +1,5 @@
 // Bump VER on every release to invalidate old caches.
-const VER   = "naada-v24";
+const VER   = "naada-v26";
 const SHELL = ["/", "/static/index.html", "/static/app.css",
                "/static/app.js", "/manifest.json", "/static/icons/icon.svg"];
 
@@ -20,8 +20,20 @@ self.addEventListener("fetch", e => {
   const { request } = e;
   const url = new URL(request.url);
 
-  // API + cross-origin (audio CDN): always network, never cache
-  if (url.pathname.startsWith("/api/") || url.hostname !== location.hostname) {
+  // ── Media and every cross-origin request: DO NOT TOUCH ──────────────
+  // Never call respondWith() here. Piping audio through the service
+  // worker breaks HTTP Range requests (seeking, progressive buffering)
+  // and — worse — ties the stream's lifetime to the worker. Android is
+  // free to terminate a service worker while the app is backgrounded, so
+  // a proxied stream simply stops when you minimise the app. Letting the
+  // request go straight to the network keeps playback owned by the media
+  // stack, which is exactly what survives backgrounding.
+  if (url.hostname !== location.hostname) return;
+  if (request.destination === "audio" || request.destination === "video") return;
+  if (request.headers.has("range")) return;
+
+  // Same-origin API: always network, never cache
+  if (url.pathname.startsWith("/api/")) {
     e.respondWith(
       fetch(request).catch(() =>
         new Response(JSON.stringify({error:"offline"}),

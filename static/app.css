@@ -1479,3 +1479,143 @@ html[data-theme="dark"] .lib-hero { filter: saturate(1.05); }
   padding: 0 18px 10px; font-size: 11px; color: var(--gray-400);
   display: flex; align-items: center; gap: 5px;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   v25 — folders, card layout hardening, drag-to-file
+═══════════════════════════════════════════════════════════════ */
+
+/* Grid items must be allowed to shrink below their content width, or a
+   long album title can blow the column out and clip the right card. */
+.pl-grid, .folder-grid { min-width: 0; }
+.pl-card, .folder-card { min-width: 0; }
+.pl-card-name, .pl-card-count,
+.folder-name, .folder-count { min-width: 0; max-width: 100%; }
+/* Belt and braces: the page itself never scrolls sideways */
+.page { overflow-x: hidden; }
+
+/* Overflow menu moves to the top-right — where every other app puts it —
+   and the pin badge moves to the top-left so the two never collide. */
+.pl-card-menu { top: 14px; right: 14px; left: auto; }
+.pl-card .pin-badge { top: 18px; left: 18px; right: auto; }
+
+/* Library hero row with its own settings entry point */
+.lib-hero-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.lib-hero-set { color: #fff; }
+.lib-hero-set:active { background: rgba(255,255,255,.18); }
+
+/* ── Folders ─────────────────────────────────────────────────────
+   A folder is a shelf for albums/playlists — one level deep only, on
+   purpose: deep trees are where personal libraries go to die. */
+.folder-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 12px; padding: 0 18px; margin-bottom: 16px;
+}
+.folder-grid:empty { display: none; }
+.folder-card {
+  position: relative; display: flex; align-items: center; gap: 10px;
+  background: var(--gray-50); border: 1.5px solid var(--gray-100);
+  border-radius: var(--r-sm); padding: 12px; cursor: pointer;
+  transition: transform .14s, box-shadow .14s, border-color .14s, background .14s;
+}
+.folder-card:active { transform: scale(.97); }
+.folder-ico {
+  width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+  background: var(--grad-brand); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-size: 19px;
+}
+.folder-meta { min-width: 0; flex: 1; }
+.folder-name {
+  font-size: 13px; font-weight: 700; color: var(--black);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.folder-count { font-size: 11px; color: var(--gray-400); margin-top: 2px; }
+
+/* Drop target feedback while dragging an album over a folder */
+.folder-card.drop-hot {
+  border-color: var(--purple); background: var(--purple-bg);
+  transform: scale(1.03);
+  box-shadow: 0 6px 20px rgba(74,26,107,.25);
+}
+.pl-card.dragging-card { opacity: .45; transform: scale(.95); }
+
+/* Ghost that follows the finger while dragging an album to a folder */
+.drag-ghost {
+  position: fixed; z-index: 900; pointer-events: none;
+  width: 96px; border-radius: 12px; overflow: hidden;
+  box-shadow: 0 12px 32px rgba(0,0,0,.35);
+  opacity: .92; transform: translate(-50%, -50%) rotate(-3deg);
+}
+.drag-ghost img, .drag-ghost .ph {
+  width: 96px; height: 96px; object-fit: cover; display: block;
+  background: var(--grad-brand);
+}
+
+/* Breadcrumb when inside a folder */
+.crumb {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 18px 14px; padding: 9px 12px;
+  background: var(--purple-bg); border-radius: var(--r-sm);
+}
+.crumb-back, .crumb-menu {
+  border: none; background: none; cursor: pointer;
+  color: var(--purple); font-size: 18px; padding: 2px;
+  display: flex; align-items: center;
+}
+.crumb-icon { color: var(--purple); font-size: 16px; display: flex; }
+.crumb-name {
+  flex: 1; min-width: 0; font-size: 14px; font-weight: 700; color: var(--purple);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Long-press affordance hint under the playlists header */
+.lib-tip {
+  padding: 0 18px 12px; font-size: 11px; color: var(--gray-400);
+  display: flex; align-items: center; gap: 5px; line-height: 1.5;
+}
+
+/* Install / playback state box in About */
+.install-box { border-radius: 12px; padding: 12px 14px; }
+.install-box.ok {
+  background: var(--teal-bg); border: 1px solid rgba(8,145,178,.25);
+}
+.install-box.warn {
+  background: var(--gold-bg); border: 1px solid rgba(245,158,11,.35);
+}
+.install-h {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 13px; font-weight: 700; margin-bottom: 6px; color: var(--black);
+}
+.install-box.ok  .install-h i { color: var(--teal); font-size: 17px; }
+.install-box.warn .install-h i { color: #B45309; font-size: 17px; }
+.install-box .about-p, .install-box .about-list li { font-size: 12.5px; }
+
+/* Measured diagnostics list in About */
+.check-list { list-style: none; margin: 8px 0; padding: 0; }
+.check-list li {
+  display: flex; align-items: flex-start; gap: 7px;
+  font-size: 12px; line-height: 1.5; padding: 3px 0; color: var(--gray-800);
+}
+.check-list li i { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
+.check-list li.ok i { color: var(--teal); }
+.check-list li.no i { color: var(--rose); }
+
+/* The ⋮ on every song row — deleting shouldn't need a hidden gesture */
+.t-menu {
+  position: relative;
+  border: none; background: none; cursor: pointer; padding: 4px;
+  color: var(--gray-400); font-size: 17px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; width: 30px; height: 30px;
+}
+/* Invisible 44px hit area — the control stays visually light but is
+   comfortably tappable, which matters most for the destructive actions. */
+.t-menu::after {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  width: 44px; height: 44px; transform: translate(-50%, -50%);
+}
+.t-menu:active { background: var(--gray-100); color: var(--purple); }
+.t-right { display: flex; align-items: center; gap: 2px; }
+.pl-row .t-right { gap: 4px; }
+@media (hover: hover) and (pointer: fine) {
+  .t-menu:hover { color: var(--purple); background: var(--gray-100); }
+}
