@@ -1150,3 +1150,332 @@ body::before {
   background: var(--grad-brand); color: #fff; border-color: transparent;
 }
 .data-btn:disabled { opacity: .6; cursor: default; }
+
+/* ═══════════════════════════════════════════════════════════════
+   v3 — Rangoli pass: display type, raga-wave signature, depth,
+   focus/motion accessibility floor, full dark theme
+═══════════════════════════════════════════════════════════════ */
+
+:root {
+  --font-display: 'Fraunces', Georgia, 'Noto Serif Telugu', serif;
+  /* extracted so the few hard-coded translucent surfaces can re-theme */
+  --surface-glass:        rgba(251,248,244,.86);
+  --surface-glass-strong: rgba(255,255,255,.94);
+  --overlay-loading:      rgba(250,250,248,.82);
+  --overlay-loading-soft: rgba(250,250,248,.6);
+  --toast-bg: var(--black);
+  --toast-fg: #fff;
+  --now-bg: linear-gradient(180deg, var(--purple-bg) 0%, var(--white) 45%);
+  --ease-soft: cubic-bezier(.22,1,.36,1);
+}
+
+/* ── Display type on headline moments only — used with restraint ──────── */
+.logo-name, .home-title, .now-title, .sheet-title, .about-name,
+.mood-result-title, .lib-hero-title, .modal-title, .lyrics-title,
+.pl-detail-title, #chart-title {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+}
+.home-title { font-weight: 600; letter-spacing: -.3px; }
+.now-title  { font-weight: 600; }
+.about-name { font-weight: 700; }
+.mood-result-title { font-weight: 700; }
+
+/* ── Signature: raga-wave — a quiet bar-rhythm motif standing in for
+   flat rule lines, echoing నాద (sound) itself. Static, not another
+   spinner: the restraint is the point. ─────────────────────────────── */
+.section-divider {
+  height: 14px; background: none; position: relative; margin: 6px 18px 22px;
+}
+.section-divider::before {
+  content: ""; position: absolute; inset: 0; margin: auto; height: 100%;
+  background-image: repeating-linear-gradient(
+    90deg, var(--purple) 0 2px, transparent 2px 9px
+  );
+  background-size: 100% 40%, 100% 70%, 100% 100%;
+  mask-image: linear-gradient(90deg, transparent, black 15%, black 85%, transparent);
+  -webkit-mask-image: linear-gradient(90deg, transparent, black 15%, black 85%, transparent);
+  opacity: .18;
+}
+.about-foot { position: relative; }
+.about-foot::before {
+  content: ""; display: block; height: 10px; margin: 0 auto 14px; width: 70%;
+  background-image: repeating-linear-gradient(90deg, var(--gold) 0 2px, transparent 2px 8px);
+  opacity: .3;
+}
+
+/* ── Depth on tap targets — hover only where a real pointer exists,
+   so touch devices keep the existing :active feedback untouched ────── */
+@media (hover: hover) and (pointer: fine) {
+  .card-img, .mini-card-img, .pl-card, .trivia-card, .about-stat, .lib-stat {
+    transition: transform .22s var(--ease-soft), box-shadow .22s var(--ease-soft);
+  }
+  .card:hover .card-img, .mini-card:hover .mini-card-img {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 24px rgba(74,26,107,.22);
+  }
+  .pl-card:hover, .trivia-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(74,26,107,.14);
+  }
+  .about-stat:hover, .lib-stat:hover { transform: translateY(-2px); }
+  .play-btn:hover { box-shadow: 0 6px 22px rgba(74,26,107,.48); }
+  .shelf-hdr:hover .sec-title { color: var(--purple); }
+  .track:hover { background: var(--gray-50); }
+}
+
+/* ── Accessibility floor: visible keyboard focus everywhere ──────────── */
+button:focus-visible, .icon-btn:focus-visible, input:focus-visible,
+[role="button"]:focus-visible, [role="menuitem"]:focus-visible,
+.nav-item:focus-visible, .card:focus-visible, .lang-chip:focus-visible,
+.s-chip:focus-visible, select:focus-visible {
+  outline: 2px solid var(--purple);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* ── Motion floor: honour reduced-motion system-wide ──────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Re-point the few hard-coded translucent surfaces at tokens ──────── */
+.app-header, .bottom-nav { background: var(--surface-glass); }
+.mini-player { background: var(--surface-glass-strong); }
+.load-overlay { background: var(--overlay-loading); }
+.now-loader { background: var(--overlay-loading-soft); }
+.toast { background: var(--toast-bg); color: var(--toast-fg); }
+.now-screen { background: var(--now-bg); }
+
+/* Seek + volume-style range inputs: gradient thumb, softer glow */
+.seek-bar::-webkit-slider-thumb {
+  background: var(--grad-brand);
+  box-shadow: 0 0 0 4px rgba(74,26,107,.15), 0 2px 6px rgba(74,26,107,.35);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Dark theme — a deep aubergine canvas, not an inverted default.
+   Nearly every component already reads from these tokens, so this
+   block re-themes nav, header, cards, sheets, and the now-playing
+   screen in one pass.
+═══════════════════════════════════════════════════════════════ */
+/* JS resolves the user's choice (light / auto / dark) into
+   html[data-theme="dark"|"light"] before first paint, and live-updates it
+   when the OS scheme flips while on "auto". */
+html[data-theme="dark"] {
+    --purple-bg: rgba(123,63,160,.22);
+    --teal-bg:   rgba(34,211,238,.16);
+    --gold-bg:   rgba(245,158,11,.18);
+    --rose-bg:   rgba(225,29,117,.18);
+
+    --white:    #17121F;
+    --gray-50:  #1D1728;
+    --gray-100: #2A2136;
+    --gray-200: #3B3049;
+    --gray-400: #948BA6;
+    --gray-600: #C8C0D6;
+    --gray-800: #EFEBF7;
+    --black:    #F5F2FA;
+
+    --shadow-sm: 0 1px 3px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.25);
+    --shadow-md: 0 4px 14px rgba(0,0,0,.4), 0 2px 6px rgba(0,0,0,.3);
+    --shadow-lg: 0 10px 36px rgba(0,0,0,.5);
+
+    --surface-glass:        rgba(23,18,31,.86);
+    --surface-glass-strong: rgba(29,23,40,.94);
+    --overlay-loading:      rgba(23,18,31,.82);
+    --overlay-loading-soft: rgba(23,18,31,.6);
+    --toast-bg: #F5F2FA;
+    --toast-fg: #17121F;
+    --now-bg: linear-gradient(180deg, #241A33 0%, #120C1A 60%);
+}
+
+html[data-theme="dark"] body {
+  background:
+    radial-gradient(circle at 12% 8%,  rgba(225,29,117,.16) 0%, transparent 45%),
+    radial-gradient(circle at 88% 16%, rgba(34,211,238,.14)  0%, transparent 42%),
+    radial-gradient(circle at 50% 96%, rgba(245,158,11,.12)  0%, transparent 50%),
+    radial-gradient(circle at 80% 70%, rgba(123,63,160,.20)  0%, transparent 48%),
+    #120C1A;
+}
+html[data-theme="dark"] body::before { opacity: .5; filter: invert(1) brightness(1.6); }
+html[data-theme="dark"] .lyrics-art,
+html[data-theme="dark"] .np-vinyl-ph,
+html[data-theme="dark"] .now-vinyl .np-vinyl-ph { box-shadow: 0 14px 44px rgba(0,0,0,.55); }
+html[data-theme="dark"] .search-box,
+html[data-theme="dark"] .modal-input { background: var(--gray-50); }
+html[data-theme="dark"] .about-logo img { box-shadow: 0 8px 28px rgba(0,0,0,.5); }
+html[data-theme="dark"] .lib-hero { filter: saturate(1.05); }
+
+/* ═══════════════════════════════════════════════════════════════
+   v3.1 — theme control, track context menu, pins, bulk select
+═══════════════════════════════════════════════════════════════ */
+
+/* Segmented theme control in Settings */
+.seg-ctrl {
+  display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--gray-100); border-radius: 12px;
+}
+.seg-opt {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: none; background: none; cursor: pointer;
+  padding: 7px 11px; border-radius: 9px;
+  font-size: 12px; font-weight: 600; color: var(--gray-600);
+  transition: background .15s, color .15s;
+}
+.seg-opt i { font-size: 14px; }
+.seg-opt.active {
+  background: var(--white); color: var(--purple);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Track context menu head */
+.tm-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 4px 4px 14px; border-bottom: 1px solid var(--gray-100);
+  margin-bottom: 12px;
+}
+.tm-art {
+  width: 48px; height: 48px; border-radius: 10px; flex-shrink: 0;
+  background: var(--grad-brand); overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; color: #fff;
+}
+.tm-art img { width: 100%; height: 100%; object-fit: cover; }
+.tm-info { min-width: 0; }
+.tm-title {
+  font-size: 15px; font-weight: 700; color: var(--black);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tm-artist {
+  font-size: 12px; color: var(--gray-400); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.modal-opt { display: flex; align-items: center; gap: 11px; }
+.modal-opt i { font-size: 19px; color: var(--gray-600); flex-shrink: 0; }
+.modal-opt.danger i { color: var(--rose); }
+
+/* Row press feedback while long-pressing */
+.track.pressing { background: var(--purple-bg); transition: background .3s; }
+
+/* Pinned song badge on cards; pinned playlist marker */
+.pin-badge {
+  position: absolute; top: 6px; right: 6px; z-index: 2;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--gold); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; box-shadow: var(--shadow-sm);
+}
+.pl-card { position: relative; }
+.pl-card .pin-badge { top: 18px; right: 18px; }
+.pl-card-menu {
+  position: absolute; top: 14px; left: 14px; z-index: 2;
+  width: 26px; height: 26px; border-radius: 50%; border: none;
+  background: rgba(0,0,0,.35); color: #fff; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; font-size: 15px;
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+}
+
+/* Bulk-select bar (playlist detail edit mode) */
+.bulk-bar {
+  position: fixed; left: 50%; transform: translateX(-50%) translateY(120%);
+  bottom: 14px; width: calc(100% - 24px); max-width: 456px;
+  background: var(--surface-glass-strong);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--gray-100);
+  border-radius: 16px; box-shadow: var(--shadow-lg);
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 14px; z-index: 700;
+  transition: transform .28s var(--ease-soft);
+}
+.bulk-bar.show { transform: translateX(-50%) translateY(0); }
+.bulk-count { font-size: 12px; font-weight: 700; color: var(--purple); flex-shrink: 0; }
+.bulk-actions { display: flex; gap: 6px; }
+.bulk-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: none; border-radius: 18px; padding: 8px 11px;
+  background: var(--gray-100); color: var(--gray-800);
+  font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.bulk-btn.danger { background: var(--rose-bg); color: var(--rose); }
+
+/* Selection checkboxes in playlist edit mode */
+.sel-box {
+  width: 22px; height: 22px; border-radius: 7px; flex-shrink: 0;
+  border: 2px solid var(--gray-200); background: var(--white);
+  display: flex; align-items: center; justify-content: center;
+  color: transparent; font-size: 14px; transition: all .12s;
+}
+.track.selected .sel-box {
+  background: var(--purple); border-color: var(--purple); color: #fff;
+}
+.track.selected { background: var(--purple-bg); }
+
+/* The target-playlist picker must stack above the playlist-detail sheet
+   (both are .sheet at z-index 500) or bulk Copy/Move taps get swallowed
+   by the sheet underneath. */
+#add-pl-sheet { z-index: 560; }
+/* Same story for the create-playlist modal reached from that picker */
+#create-pl-modal { z-index: 620; }
+
+/* ═══════════════════════════════════════════════════════════════
+   v24 — dynamic album color, mini-player swipe, playlist reorder
+═══════════════════════════════════════════════════════════════ */
+
+/* ── Dynamic color: the now-playing screen takes its wash from the
+   album art. Two custom props are set from JS; everything below reads
+   from them, so a single failed extraction just falls back to --now-bg. */
+.now-screen {
+  --art-1: transparent;
+  --art-2: transparent;
+  transition: transform .32s cubic-bezier(.4,0,.2,1), visibility 0s linear .32s;
+}
+.now-screen::after {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  background: linear-gradient(175deg, var(--art-1) 0%, var(--art-2) 55%, transparent 90%);
+  opacity: 0; transition: opacity .7s ease, background .7s ease;
+  pointer-events: none;
+}
+.now-screen.tinted::after { opacity: 1; }
+/* Keep the vinyl glow in sympathy with the extracted colour */
+.now-screen.tinted .now-vinyl { box-shadow: 0 16px 56px var(--art-1); }
+
+/* The mini-player picks up a subtle edge of the same colour */
+.mini-player { --art-1: transparent; }
+.mini-player.tinted {
+  border-color: var(--art-1);
+  box-shadow: var(--shadow-lg), 0 0 0 1px var(--art-1);
+}
+
+/* ── Mini-player swipe ───────────────────────────────────────────
+   Horizontal drag skips tracks, upward drag expands. The bar follows
+   the finger, then snaps or animates out. */
+.mini-player.swiping { transition: none; }
+.mini-player.settling { transition: transform .26s var(--ease-soft), opacity .26s var(--ease-soft); }
+.mini-swipe-hint {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  font-size: 22px; opacity: 0; pointer-events: none;
+  transition: opacity .12s; color: var(--purple);
+}
+.mini-swipe-hint.left  { left: 14px; }
+.mini-swipe-hint.right { right: 14px; }
+.mini-player.hint-next .mini-swipe-hint.left  { opacity: .9; }
+.mini-player.hint-prev .mini-swipe-hint.right { opacity: .9; }
+
+/* ── Playlist drag-to-reorder ────────────────────────────────────
+   Mirrors the queue's affordance so the two screens behave alike. */
+.pl-row.dragging { opacity: .4; }
+.pl-row.drag-over { background: var(--purple-bg); box-shadow: inset 0 2px 0 var(--purple); }
+.pl-grip {
+  color: var(--gray-400); font-size: 18px; cursor: grab;
+  padding: 0 2px; flex-shrink: 0; touch-action: none;
+}
+.reorder-hint {
+  padding: 0 18px 10px; font-size: 11px; color: var(--gray-400);
+  display: flex; align-items: center; gap: 5px;
+}

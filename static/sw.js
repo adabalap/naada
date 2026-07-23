@@ -1,5 +1,5 @@
 // Bump VER on every release to invalidate old caches.
-const VER   = "naada-v22";
+const VER   = "naada-v24";
 const SHELL = ["/", "/static/index.html", "/static/app.css",
                "/static/app.js", "/manifest.json", "/static/icons/icon.svg"];
 

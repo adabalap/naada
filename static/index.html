@@ -36,7 +36,20 @@
   <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg?v=22">
   <link rel="shortcut icon" href="/favicon.ico">
   <link rel="apple-touch-icon" href="/static/icons/icon-180.png?v=22">
-  <link rel="stylesheet" href="/static/app.css?v=22">
+  <script>
+  /* Resolve theme before first paint to avoid a flash. "auto" follows the OS. */
+  (function () {
+    try {
+      var t = JSON.parse(localStorage.getItem("nd_theme")) || "auto";
+      var dark = t === "dark" || (t === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    } catch (e) { document.documentElement.dataset.theme = "light"; }
+  })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css?v=24">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
 </head>
 <body>
@@ -91,6 +104,17 @@
           <button class="icon-btn" id="btn-home-settings" aria-label="Customize home"><i class="ti ti-adjustments"></i></button>
         </div>
       </div>
+
+      <!-- Pinned songs -->
+      <section class="shelf" id="shelf-pinned" data-shelf="pinned">
+        <div class="sec-hdr shelf-hdr" data-collapse="pinned">
+          <span class="sec-title"><i class="ti ti-pin-filled" style="font-size:15px;color:var(--gold)"></i> Pinned</span>
+          <i class="ti ti-chevron-down shelf-caret"></i>
+        </div>
+        <div class="shelf-body">
+          <div id="home-pinned" class="h-row" aria-label="Pinned songs"></div>
+        </div>
+      </section>
 
       <!-- Quick access: jump back in (recents) -->
       <section class="shelf" id="shelf-recents" data-shelf="recents">
@@ -282,7 +306,10 @@
     <!-- QUEUE ─────────────────────────────────────────────────────────── -->
     <main class="page" id="page-queue" aria-label="Queue">
       <div class="sec-hdr" style="padding-top:16px">
-        <span class="sec-title">Play Queue</span>
+        <span style="display:inline-flex;align-items:center;gap:6px">
+          <button class="icon-btn" id="queue-back" aria-label="Back"><i class="ti ti-arrow-left"></i></button>
+          <span class="sec-title">Play Queue</span>
+        </span>
         <span class="badge badge-teal" id="queue-badge">0 songs</span>
       </div>
       <div class="queue-actions" id="queue-actions" style="display:none">
@@ -317,12 +344,13 @@
     <div class="nav-item" data-page="search"><i class="ti ti-search"></i><span>Search</span></div>
     <div class="nav-item" data-page="library"><i class="ti ti-heart"></i><span>Library</span></div>
     <div class="nav-item" data-page="trivia"><i class="ti ti-bulb"></i><span>Trivia</span></div>
-    <div class="nav-item" data-page="queue"><i class="ti ti-list"></i><span>Queue</span></div>
   </nav>
 
   <!-- ── Mini Player (compact bar, tap to expand) ──────────────────────── -->
   <div class="mini-player" id="mini-player" role="button" tabindex="0" aria-label="Open now playing">
     <div class="mini-progress" id="mini-progress"></div>
+    <span class="mini-swipe-hint left" aria-hidden="true"><i class="ti ti-player-track-next"></i></span>
+    <span class="mini-swipe-hint right" aria-hidden="true"><i class="ti ti-player-track-prev"></i></span>
     <div class="mini-art" id="mini-art" aria-hidden="true"><span id="mini-art-ph">🎵</span></div>
     <div class="mini-info">
       <div class="mini-title" id="mini-title">Tap a song to play</div>
@@ -428,6 +456,9 @@
       <span class="sec-more" id="pl-play-all">▶ Play all</span>
     </div>
     <div id="pl-detail-list" role="list"></div>
+    <div class="reorder-hint" id="pl-reorder-hint" style="display:none">
+      <i class="ti ti-grip-vertical"></i> Drag the handle to reorder
+    </div>
   </div>
 </div>
 
@@ -444,6 +475,14 @@
     <div id="settings-shelf-list" class="settings-list"></div>
     <div class="settings-section">
       <div class="settings-row">
+        <span>Appearance</span>
+        <div class="seg-ctrl" id="theme-seg" role="radiogroup" aria-label="Theme">
+          <button class="seg-opt" data-theme-opt="light" role="radio"><i class="ti ti-sun"></i> Light</button>
+          <button class="seg-opt" data-theme-opt="auto"  role="radio">Auto</button>
+          <button class="seg-opt" data-theme-opt="dark"  role="radio"><i class="ti ti-moon"></i> Dark</button>
+        </div>
+      </div>
+      <div class="settings-row" style="margin-top:12px">
         <span>Default language</span>
         <select id="settings-default-lang" class="settings-select">
           <option value="telugu">Telugu</option>
@@ -581,9 +620,45 @@
   </div>
 </div>
 
+<!-- ── Track context menu (long-press any song) ───────────────────────── -->
+<div class="modal-back" id="track-menu" role="dialog" aria-modal="true" aria-label="Song options">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="tm-head" id="tm-head">
+      <div class="tm-art" id="tm-art">🎵</div>
+      <div class="tm-info">
+        <div class="tm-title" id="tm-title">—</div>
+        <div class="tm-artist" id="tm-artist"></div>
+      </div>
+    </div>
+    <div class="modal-opts" id="tm-opts"></div>
+    <button class="modal-cancel" id="tm-cancel">Cancel</button>
+  </div>
+</div>
+
+<!-- ── Playlist actions (⋮ on a playlist) ─────────────────────────────── -->
+<div class="modal-back" id="pl-menu" role="dialog" aria-modal="true" aria-label="Playlist options">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="pl-menu-title">Playlist</div>
+    <div class="modal-opts" id="pl-menu-opts"></div>
+    <button class="modal-cancel" id="pl-menu-cancel">Cancel</button>
+  </div>
+</div>
+
+<!-- ── Bulk-select action bar (playlist detail edit mode) ─────────────── -->
+<div class="bulk-bar" id="bulk-bar">
+  <span class="bulk-count" id="bulk-count">0 selected</span>
+  <div class="bulk-actions">
+    <button class="bulk-btn" id="bulk-copy"><i class="ti ti-copy"></i> Copy to…</button>
+    <button class="bulk-btn" id="bulk-move"><i class="ti ti-arrow-move-right"></i> Move to…</button>
+    <button class="bulk-btn danger" id="bulk-remove"><i class="ti ti-trash"></i> Remove</button>
+  </div>
+</div>
+
 <!-- ── Toast ──────────────────────────────────────────────────────────── -->
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=22"></script>
+<script src="/static/app.js?v=24"></script>
 </body>
 </html>

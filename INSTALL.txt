@@ -1,0 +1,74 @@
+Naada v24 — install / upgrade
+=============================
+
+This archive is the complete Naada app: Flask backend, PWA frontend, daemon
+script and deploy files. Frontend only was changed in v24 — app.py and the
+deploy files are untouched from your repo.
+
+
+UPGRADING AN EXISTING INSTALL
+-----------------------------
+
+  cd ~
+  cp -r naada naada.backup          # keep a rollback copy
+  cd ~/naada
+  ./naada.sh stop
+
+  # unzip this archive so its "naada/" folder replaces ~/naada
+  # (or just copy the static/ folder over — that's all that changed)
+
+  ./naada.sh start
+
+Two files you may want to keep from your old install rather than the ones
+here:
+
+  config.json      Not in this archive at all — your Gemini API key lives
+                   here and stays private. Nothing overwrites it.
+  ai_cache.json    A regenerable cache of AI stories. Keeping your existing
+                   one avoids re-fetching; overwriting it is harmless.
+
+Your listening data — liked songs, playlists, history, pinned songs,
+settings — lives in the browser on your device, not in these files. It
+survives the upgrade untouched. If you want belt-and-braces, use
+Home → ⚙ → About Naada → "Back up my data" first.
+
+
+FRESH INSTALL
+-------------
+
+  cd ~
+  unzip naada-v24.zip
+  cd naada
+  pip install flask requests cryptography flask-cors
+  ./naada.sh start
+
+Open Chrome → https://localhost:5443 → accept the certificate →
+⋮ menu → Add to Home Screen.
+
+Optional, for the AI features (story cards, trivia, mood playlists):
+
+  1. Get a free key at https://aistudio.google.com
+  2. cp config.example.json config.json
+  3. Put your key in config.json
+  4. ./naada.sh restart
+
+Without a key the AI features hide themselves and everything else works
+normally.
+
+
+AFTER STARTING
+--------------
+
+If the app looks unchanged, it's serving a cached copy. Either tap
+Home → ⚙ → About Naada → "Update now", or hard-reload the page. The service
+worker version was bumped in this release, so this normally happens by
+itself.
+
+
+WHAT CHANGED
+------------
+
+See RELEASE-v24.md for the full list. Headlines: a Light/Auto/Dark
+appearance setting, album-art colour on the player, swipe gestures on the
+mini-player, long-press song menus, pinning, full playlist CRUD with
+copy/move curation, and drag-to-reorder.

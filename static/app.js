@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v22";
+const APP_VERSION = "v24";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -33,8 +33,10 @@ const S = {
   shuffle:    LS.get("nd_shuffle", false),
   repeat:     LS.get("nd_repeat",  false),  // false | "all" | "one"
   liked:      LS.get("nd_liked",   []),
-  playlists:  LS.get("nd_pls",     []),     // [{id,name,songs:[]}]
+  playlists:  LS.get("nd_pls",     []),     // [{id,name,songs:[],pinned?}]
   history:    LS.get("nd_history", []),
+  pinned:     LS.get("nd_pinned",  []),     // pinned songs
+  theme:      LS.get("nd_theme",   "auto"), // "auto" | "light" | "dark"
   sleepTimer: null,
   sleepEnd:   null,
   addPlTrack: null,       // track pending add-to-playlist
@@ -52,7 +54,28 @@ const save = () => {
   LS.set("nd_history", S.history);
   LS.set("nd_shuffle", S.shuffle);
   LS.set("nd_repeat",  S.repeat);
+  LS.set("nd_pinned",  S.pinned);
 };
+
+/* ── Theme (light / auto / dark) ────────────────────────────────────────── */
+const THEME_COLORS = { light: "#4A1A6B", dark: "#120C1A" };
+const _darkMQ = matchMedia("(prefers-color-scheme: dark)");
+
+function applyTheme() {
+  const resolved = S.theme === "dark" || (S.theme === "auto" && _darkMQ.matches)
+    ? "dark" : "light";
+  document.documentElement.dataset.theme = resolved;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = THEME_COLORS[resolved];
+}
+function setTheme(t) {
+  S.theme = t;
+  LS.set("nd_theme", t);
+  applyTheme();
+}
+// While on "auto", follow live OS scheme changes (sunset auto-switch etc.)
+_darkMQ.addEventListener?.("change", () => { if (S.theme === "auto") applyTheme(); });
+applyTheme();
 
 /* ── DOM ────────────────────────────────────────────────────────────────── */
 const $  = id  => document.getElementById(id);
@@ -660,6 +683,9 @@ function updateMeta(t) {
   updateNpLike();
   const qb = $("queue-badge");
   if (qb) qb.textContent = `${S.queue.length} song${S.queue.length!==1?"s":""}`;
+
+  // Tint the player from the album art (async, fails soft)
+  if (typeof applyArtColors === "function") applyArtColors(t);
 }
 
 function vinylPlay(playing) {
@@ -854,9 +880,13 @@ function renderPlaylists() {
     grid.innerHTML = `<div style="grid-column:1/-1"><div class="state-msg" style="padding:20px"><i class="ti ti-playlist"></i><p>No playlists yet</p></div></div>`;
     return;
   }
-  grid.innerHTML = S.playlists.map(pl => {
+  // Pinned playlists always sort to the top
+  const ordered = [...S.playlists].sort((a,b) => (b.pinned?1:0) - (a.pinned?1:0));
+  grid.innerHTML = ordered.map(pl => {
     const first = pl.songs?.[0];
     return `<div class="pl-card" data-plid="${esc(pl.id)}">
+      <button class="pl-card-menu" data-plmenu="${esc(pl.id)}" aria-label="Playlist options"><i class="ti ti-dots"></i></button>
+      ${pl.pinned ? `<span class="pin-badge"><i class="ti ti-pin-filled"></i></span>` : ""}
       <div class="pl-card-img">
         ${first?.image ? `<img src="${esc(first.image)}" alt="">` : "🎵"}
       </div>
@@ -865,7 +895,11 @@ function renderPlaylists() {
     </div>`;
   }).join("");
   grid.querySelectorAll(".pl-card[data-plid]").forEach(el =>
-    el.addEventListener("click", () => openPlaylistDetail(el.dataset.plid))
+    el.addEventListener("click", e => {
+      const menuBtn = e.target.closest(".pl-card-menu");
+      if (menuBtn) { e.stopPropagation(); openPlMenu(menuBtn.dataset.plmenu); return; }
+      openPlaylistDetail(el.dataset.plid);
+    })
   );
 }
 
@@ -908,6 +942,9 @@ $("new-playlist-btn").addEventListener("click", () => {
 });
 
 $("pl-create-confirm").addEventListener("click", () => {
+  // Rename mode and create-from-selection mode are handled by their own
+  // listeners (registered later, so they run after this one) — bail here.
+  if (S.renamePlId || S.newPlWithTracks) return;
   const name = $("pl-name-input").value.trim();
   if (!name) return;
   S.playlists.unshift({ id: uid(), name, songs: [] });
@@ -924,13 +961,20 @@ function openPlaylistDetail(plid) {
   if (!pl) return;
   S.viewPlId = plid;
   S.plEditMode = false;
-  const et = $("pl-edit-toggle"); if (et) et.textContent = "Edit";
+  S.plSel = new Set();
+  const et = $("pl-edit-toggle"); if (et) et.textContent = "Select";
+  const bar = $("bulk-bar"); if (bar) bar.classList.remove("show");
+  const rh = $("pl-reorder-hint"); if (rh) rh.style.display = "none";
   $("pl-detail-title").textContent = pl.name;
   renderPlaylistDetail(pl);
   $("pl-detail-sheet").classList.add("open");
 }
 
-$("pl-detail-close").addEventListener("click", () => $("pl-detail-sheet").classList.remove("open"));
+$("pl-detail-close").addEventListener("click", () => {
+  $("pl-detail-sheet").classList.remove("open");
+  S.plEditMode = false; S.plSel = new Set();
+  const bar = $("bulk-bar"); if (bar) bar.classList.remove("show");
+});
 
 $("pl-play-all").addEventListener("click", () => {
   const pl = S.playlists.find(p => p.id === S.viewPlId);
@@ -969,12 +1013,53 @@ $("np-add-pl").addEventListener("click", () => {
   openAddToPlaylist();
 });
 
-function openAddToPlaylist() {
+/* Single-track mode: uses S.addPlTrack (legacy callers unchanged).
+   Bulk mode: pass { bulk: tracks[], mode: "copy"|"move" } — "move" also
+   removes the tracks from the currently-open playlist. This is how you
+   curate a new collection out of an existing one. */
+function openAddToPlaylist(bulkOpts = null) {
+  S.addPlBulk = bulkOpts;
   const list = $("pl-select-list");
-  if (!S.playlists.length) {
-    list.innerHTML = `<div class="state-msg"><i class="ti ti-playlist"></i><p>No playlists yet.<br>Create one in Library.</p></div>`;
+  // In bulk mode, don't offer the playlist we're moving/copying from
+  const targets = bulkOpts
+    ? S.playlists.filter(p => p.id !== S.viewPlId)
+    : S.playlists;
+
+  const finish = (pl, added) => {
+    // "move" removes the originals from the source playlist
+    if (bulkOpts?.mode === "move") {
+      const src = S.playlists.find(p => p.id === S.viewPlId);
+      if (src) {
+        const ids = new Set(bulkOpts.bulk.map(t => t.id));
+        src.songs = src.songs.filter(s => !ids.has(s.id));
+        renderPlaylistDetail(src);
+      }
+      S.plSel = new Set(); updateBulkBar();
+    }
+    S.playlists = [pl, ...S.playlists.filter(p => p.id !== pl.id)];
+    save(); $("add-pl-sheet").classList.remove("open");
+    S.addPlBulk = null;
+    touchShelf("playlists");
+    renderHomeLibraryShelves();
+    if (S.page === "library") renderLibrary();
+    const verb = bulkOpts?.mode === "move" ? "Moved" : "Added";
+    toast(added ? `${verb} ${added} song${added!==1?"s":""} to "${pl.name}"` : `Already in "${pl.name}"`);
+  };
+
+  const addTracksTo = pl => {
+    const tracks = bulkOpts ? bulkOpts.bulk : (S.addPlTrack ? [S.addPlTrack] : []);
+    let added = 0;
+    for (const t of tracks) {
+      if (!pl.songs.some(s => s.id === t.id)) { pl.songs.push({...t}); added++; }
+    }
+    finish(pl, added);
+  };
+  S._addTracksTo = addTracksTo;   // used by the "+ New" flow below
+
+  if (!targets.length) {
+    list.innerHTML = `<div class="state-msg"><i class="ti ti-playlist"></i><p>No other playlists yet.<br>Tap + to create one${bulkOpts ? " from your selection" : ""}.</p></div>`;
   } else {
-    list.innerHTML = S.playlists.map(pl => {
+    list.innerHTML = targets.map(pl => {
       const first = pl.songs?.[0];
       return `<div class="pl-select-item" data-plid="${esc(pl.id)}">
         <div class="pl-select-thumb">
@@ -989,15 +1074,7 @@ function openAddToPlaylist() {
     list.querySelectorAll(".pl-select-item").forEach(el => {
       el.addEventListener("click", () => {
         const pl = S.playlists.find(p => p.id === el.dataset.plid);
-        if (!pl || !S.addPlTrack) return;
-        if (pl.songs.some(s => s.id === S.addPlTrack.id)) { toast("Already in this playlist"); return; }
-        pl.songs.push({...S.addPlTrack});
-        // Surface the just-updated playlist: move it to the front + float shelf
-        S.playlists = [pl, ...S.playlists.filter(p => p.id !== pl.id)];
-        save(); $("add-pl-sheet").classList.remove("open");
-        touchShelf("playlists");
-        renderHomeLibraryShelves();
-        toast(`Added to "${pl.name}"`);
+        if (pl) addTracksTo(pl);
       });
     });
   }
@@ -1151,6 +1228,7 @@ if ("serviceWorker" in navigator) {
 
 /* ── Home settings (which shelves show, default lang) ────────────────────── */
 const SHELF_DEFS = [
+  { id:"pinned",       label:"Pinned songs",           personal:true },
   { id:"recents",      label:"Jump back in (recents)", personal:true },
   { id:"liked",        label:"Your liked songs",       personal:true },
   { id:"playlists",    label:"Your playlists",          personal:true },
@@ -1166,6 +1244,10 @@ if (!S.homeCfg.shelves.includes("chartbusters")) {
   const i = S.homeCfg.shelves.indexOf("trending");
   if (i !== -1) S.homeCfg.shelves.splice(i+1, 0, "chartbusters");
   else S.homeCfg.shelves.push("chartbusters");
+  LS.set("nd_homecfg", S.homeCfg);
+}
+if (!S.homeCfg.shelves.includes("pinned")) {
+  S.homeCfg.shelves.unshift("pinned");
   LS.set("nd_homecfg", S.homeCfg);
 }
 // Per-shelf "last touched" times — personal shelves float to the top when used.
@@ -1212,7 +1294,10 @@ function applyShelfVisibility() {
   // 1) Toggle visibility per saved config
   for (const def of SHELF_DEFS) {
     const el = $("shelf-" + def.id);
-    if (el) el.style.display = S.homeCfg.shelves.includes(def.id) ? "" : "none";
+    if (!el) continue;
+    let show = S.homeCfg.shelves.includes(def.id);
+    if (def.id === "pinned" && !S.pinned.length) show = false;  // hide when empty
+    el.style.display = show ? "" : "none";
   }
   // 2) Order: personal shelves first (most-recently-touched on top),
   //    then discovery shelves in their natural order. This is what makes a
@@ -1231,6 +1316,31 @@ function applyShelfVisibility() {
 }
 
 function renderHomeLibraryShelves() {
+  // Pinned songs — the shelf hides itself entirely when nothing is pinned,
+  // so it never nags; pinning a first song makes it appear at the top.
+  const pinShelf = $("shelf-pinned"), pinRow = $("home-pinned");
+  if (pinShelf && pinRow) {
+    if (S.pinned.length && S.homeCfg.shelves.includes("pinned")) {
+      pinShelf.style.display = "";
+      pinRow.innerHTML = S.pinned.map(t =>
+        `<div class="mini-card" data-id="${esc(t.id)}">
+           <div class="mini-card-img" style="position:relative">
+             ${t.image?`<img src="${esc(t.image)}" alt="">`:"🎵"}
+             <span class="pin-badge"><i class="ti ti-pin-filled"></i></span>
+           </div>
+           <div class="mini-card-title">${esc(t.title)}</div>
+           <div class="mini-card-sub">${esc(t.artist||"")}</div>
+         </div>`).join("");
+      pinRow.querySelectorAll(".mini-card[data-id]").forEach(el =>
+        el.addEventListener("click", () => {
+          const t = S.pinned.find(x => x.id === el.dataset.id);
+          if (t) play(t, S.pinned, S.pinned.indexOf(t));
+        }));
+    } else {
+      pinShelf.style.display = "none";
+    }
+  }
+
   // Recents
   const rec = $("home-recents");
   if (rec) {
@@ -1353,6 +1463,16 @@ function openHomeSettings() {
       LS.set("nd_homecfg", S.homeCfg);
       applyShelfVisibility();
     }));
+  // Theme picker
+  const seg = $("theme-seg");
+  if (seg) {
+    const sync = () => seg.querySelectorAll(".seg-opt").forEach(b =>
+      b.classList.toggle("active", b.dataset.themeOpt === S.theme));
+    sync();
+    seg.querySelectorAll(".seg-opt").forEach(b => {
+      b.onclick = () => { setTheme(b.dataset.themeOpt); sync(); };
+    });
+  }
   const sel = $("settings-default-lang");
   if (sel) {
     sel.value = S.homeCfg.defaultLang || "telugu";
@@ -1506,65 +1626,117 @@ function renderPlaylistDetail(pl) {
     list.innerHTML = `<div class="state-msg"><i class="ti ti-playlist"></i><p>No songs yet.<br>Add songs from the now-playing screen.</p></div>`;
     return;
   }
+  const sel = S.plSel || new Set();
   list.innerHTML = pl.songs.map((t,i) =>
-    `<div class="track pl-row${S.track?.id===t.id?" now":""}" data-idx="${i}" data-id="${esc(t.id)}">
-       <span class="t-num">${i+1}</span>
+    `<div class="track pl-row${S.track?.id===t.id?" now":""}${S.plEditMode && sel.has(t.id)?" selected":""}" data-idx="${i}" data-id="${esc(t.id)}">
+       ${S.plEditMode
+         ? `<span class="pl-grip" aria-label="Drag to reorder"><i class="ti ti-grip-vertical"></i></span>
+            <span class="sel-box"><i class="ti ti-check"></i></span>`
+         : `<span class="t-num">${i+1}</span>`}
        <div class="t-img">${t.image?`<img src="${esc(t.image)}" alt="" loading="lazy">`:'<span class="t-img-ph">🎵</span>'}</div>
        <div class="t-info"><div class="t-title">${esc(t.title)}</div><div class="t-meta">${esc(t.artist||"")}</div></div>
-       ${S.plEditMode
-         ? `<button class="q-remove" data-rm="${i}" aria-label="Remove"><i class="ti ti-x"></i></button>`
-         : `<span class="t-dur">${fmt(t.duration)}</span>`}
+       <span class="t-dur">${fmt(t.duration)}</span>
      </div>`).join("");
 
   list.querySelectorAll(".pl-row").forEach(row => {
     row.addEventListener("click", e => {
-      if (e.target.closest(".q-remove")) return;
+      if (e.target.closest(".pl-grip")) return;   // grip is for dragging
       const i = parseInt(row.dataset.idx);
-      if (!isNaN(i) && pl.songs[i]) play(pl.songs[i], pl.songs, i);
+      if (isNaN(i) || !pl.songs[i]) return;
+      if (S.plEditMode) {
+        // Edit mode: tapping toggles selection instead of playing
+        const id = pl.songs[i].id;
+        if (sel.has(id)) sel.delete(id); else sel.add(id);
+        S.plSel = sel;
+        row.classList.toggle("selected", sel.has(id));
+        updateBulkBar();
+      } else {
+        play(pl.songs[i], pl.songs, i);
+      }
     });
   });
-  list.querySelectorAll(".q-remove").forEach(btn => {
-    btn.addEventListener("click", e => {
-      e.stopPropagation();
-      const i = parseInt(btn.dataset.rm);
-      pl.songs.splice(i,1);
-      save();
-      renderPlaylistDetail(pl);
-      renderHomeLibraryShelves();
-    });
-  });
+
+  // Reordering is available in Select mode (see initPlaylistReorder)
+  if (typeof initPlaylistReorder === "function") initPlaylistReorder(pl);
 }
+
+/* ── Bulk bar: shown while songs are selected in playlist edit mode ─────── */
+function updateBulkBar() {
+  const bar = $("bulk-bar");
+  const n = S.plSel ? S.plSel.size : 0;
+  $("bulk-count").textContent = `${n} selected`;
+  bar.classList.toggle("show", S.plEditMode && n > 0);
+}
+
+function bulkSelectedTracks() {
+  const pl = S.playlists.find(p => p.id === S.viewPlId);
+  if (!pl || !S.plSel) return [];
+  return pl.songs.filter(s => S.plSel.has(s.id));
+}
+
+$("bulk-remove").addEventListener("click", () => {
+  const pl = S.playlists.find(p => p.id === S.viewPlId);
+  if (!pl || !S.plSel?.size) return;
+  const n = S.plSel.size;
+  pl.songs = pl.songs.filter(s => !S.plSel.has(s.id));
+  S.plSel.clear();
+  save(); renderPlaylistDetail(pl); renderHomeLibraryShelves(); updateBulkBar();
+  toast(`Removed ${n} song${n!==1?"s":""}`);
+});
+
+$("bulk-copy").addEventListener("click", () => {
+  const tracks = bulkSelectedTracks();
+  if (!tracks.length) return;
+  openAddToPlaylist({ bulk: tracks, mode: "copy" });
+});
+
+$("bulk-move").addEventListener("click", () => {
+  const tracks = bulkSelectedTracks();
+  if (!tracks.length) return;
+  openAddToPlaylist({ bulk: tracks, mode: "move" });
+});
 
 const plEditToggle = $("pl-edit-toggle");
 if (plEditToggle) plEditToggle.addEventListener("click", () => {
   S.plEditMode = !S.plEditMode;
-  plEditToggle.textContent = S.plEditMode ? "Done" : "Edit";
+  S.plSel = new Set();
+  plEditToggle.textContent = S.plEditMode ? "Done" : "Select";
+  const hint = $("pl-reorder-hint");
+  if (hint) hint.style.display = S.plEditMode ? "flex" : "none";
   const pl = S.playlists.find(p => p.id === S.viewPlId);
   if (pl) renderPlaylistDetail(pl);
+  updateBulkBar();
 });
 
+// ⋮ on the playlist detail sheet opens the proper action sheet
 const plMenu = $("pl-detail-menu");
 if (plMenu) plMenu.addEventListener("click", () => {
-  const pl = S.playlists.find(p => p.id === S.viewPlId);
-  if (!pl) return;
-  const choice = prompt(`Playlist "${pl.name}"\n\nType: rename  |  delete  |  cancel`, "rename");
-  if (choice === "rename") {
-    const name = prompt("New playlist name:", pl.name);
-    if (name && name.trim()) { pl.name = name.trim(); save(); $("pl-detail-title").textContent = pl.name; renderLibrary(); toast("Renamed"); }
-  } else if (choice === "delete") {
-    S.playlists = S.playlists.filter(p => p.id !== pl.id);
-    save(); $("pl-detail-sheet").classList.remove("open"); renderLibrary(); renderHomeLibraryShelves();
-    toast(`"${pl.name}" deleted`);
-  }
+  if (S.viewPlId) openPlMenu(S.viewPlId);
 });
 
 // New-playlist button inside add-to-playlist sheet
 const addPlNew = $("add-pl-new");
 if (addPlNew) addPlNew.addEventListener("click", () => {
   $("add-pl-sheet").classList.remove("open");
+  S.newPlWithTracks = true;   // route the create-confirm into the add flow
   $("create-pl-modal").classList.add("open");
   setTimeout(() => $("pl-name-input")?.focus(), 100);
 });
+
+// Capture-phase: when creating from the add-to-playlist flow, the new
+// playlist is born already containing the pending track(s)/selection.
+$("pl-create-confirm").addEventListener("click", e => {
+  if (!S.newPlWithTracks || S.renamePlId) return;
+  e.stopImmediatePropagation();
+  S.newPlWithTracks = false;
+  const name = $("pl-name-input").value.trim();
+  if (!name) return;
+  const pl = { id: uid(), name, songs: [] };
+  S.playlists.unshift(pl);
+  $("create-pl-modal").classList.remove("open");
+  if (S._addTracksTo) S._addTracksTo(pl);
+  else { save(); renderPlaylists(); toast(`Playlist "${name}" created`); }
+}, true);
 
 /* ── Home see-all shortcuts ──────────────────────────────────────────────── */
 const homeLikedMore = $("home-liked-more");
@@ -1707,6 +1879,7 @@ const BACKUP_KEYS = [
   "nd_liked", "nd_pls", "nd_history", "nd_homecfg",
   "nd_shuffle", "nd_repeat", "nd_ai_anecdote",
   "nd_shelf_touch", "nd_collapsed",
+  "nd_pinned", "nd_theme",
 ];
 
 function exportData() {
@@ -1845,3 +2018,608 @@ if (triviaRefresh) triviaRefresh.addEventListener("click", () => loadTrivia(true
   loadNewReleases(dl);
   loadHomeShelves(dl);
 })();
+
+/* ═══════════════════════════════════════════════════════════════════════
+   v23: Track context menu (long-press), pins, playlist action sheet,
+        bulk move/copy, queue back nav, audio-state sync
+═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Pin helpers ─────────────────────────────────────────────────────────── */
+function isPinned(id) { return S.pinned.some(t => t.id === id); }
+
+function togglePin(track) {
+  if (!track) return;
+  if (isPinned(track.id)) {
+    S.pinned = S.pinned.filter(t => t.id !== track.id);
+    toast("Unpinned");
+  } else {
+    S.pinned = [{...track}, ...S.pinned].slice(0, 24);
+    toast("Pinned to Home");
+    touchShelf("pinned");
+  }
+  save();
+  renderHomeLibraryShelves();
+  applyShelfVisibility();
+}
+
+/* ── Queue helpers ───────────────────────────────────────────────────────── */
+function queuePlayNext(track) {
+  if (!track) return;
+  // Remove any existing copy, then insert right after the current song
+  S.queue = S.queue.filter(t => t.id !== track.id);
+  const at = Math.min(S.queueIdx + 1, S.queue.length);
+  S.queue.splice(at, 0, {...track});
+  S.queueIdx = S.queue.findIndex(t => t.id === S.track?.id);
+  toast(`Playing next: ${track.title}`);
+  if (S.page === "queue") renderQueueEditable();
+}
+
+function queueAddLast(track) {
+  if (!track) return;
+  if (S.queue.some(t => t.id === track.id)) { toast("Already in queue"); return; }
+  S.queue.push({...track});
+  toast("Added to queue");
+  if (S.page === "queue") renderQueueEditable();
+}
+
+/* ── Track context menu ──────────────────────────────────────────────────
+   Long-press any song row, anywhere in the app, for a contextual action
+   sheet. What "Remove" means depends on where you pressed:
+   liked list → unlike · history → remove from history · playlist → remove
+   from that playlist · queue → remove from queue. */
+const trackMenu = $("track-menu");
+
+function tmContextOf(row) {
+  // Walk up from the row to figure out which list it lives in
+  if (row.closest("#liked-list"))     return "liked";
+  if (row.closest("#home-liked"))     return "liked";
+  if (row.closest("#history-list"))   return "history";
+  if (row.closest("#home-recents"))   return "history";
+  if (row.closest("#pl-detail-list")) return "playlist";
+  if (row.closest("#queue-list"))     return "queue";
+  if (row.closest("#home-pinned"))    return "pinned";
+  return "browse";
+}
+
+function tmFindTrack(id, ctx) {
+  const pools = {
+    liked:    [S.liked],
+    history:  [S.history],
+    pinned:   [S.pinned],
+    queue:    [S.queue],
+    playlist: [S.playlists.find(p => p.id === S.viewPlId)?.songs || []],
+    browse:   [S.queue, S.history, S.liked],
+  }[ctx] || [];
+  for (const pool of pools) {
+    const t = pool.find(x => x.id === id);
+    if (t) return t;
+  }
+  // Fall back to any rendered list registry entry
+  for (const el of document.querySelectorAll("[id]")) {
+    const list = _listRegistry.get(el);
+    const t = list && list.find(x => x.id === id);
+    if (t) return t;
+  }
+  return null;
+}
+
+function openTrackMenu(track, ctx) {
+  if (!track) return;
+  S.tmTrack = track; S.tmCtx = ctx;
+
+  // Header
+  $("tm-title").textContent  = track.title  || "—";
+  $("tm-artist").textContent = track.artist || "";
+  $("tm-art").innerHTML = track.image
+    ? `<img src="${esc(track.image)}" alt="">` : "🎵";
+
+  const liked  = isLiked(track.id);
+  const pinned = isPinned(track.id);
+  const removeLabel = {
+    liked:    { icon: "ti-heart-off", text: "Remove from Liked" },
+    history:  { icon: "ti-eraser",    text: "Remove from history" },
+    playlist: { icon: "ti-playlist-x",text: "Remove from this playlist" },
+    queue:    { icon: "ti-list-details", text: "Remove from queue" },
+    pinned:   null,   // pin toggle already covers it
+    browse:   null,
+  }[ctx];
+
+  const opts = [
+    { act:"playnext", icon:"ti-player-track-next", text:"Play next" },
+    { act:"addqueue", icon:"ti-playlist-add",      text:"Add to queue" },
+    { act:"addpl",    icon:"ti-folder-plus",       text:"Add to playlist…" },
+    { act:"like",     icon: liked ? "ti-heart-off" : "ti-heart",
+                      text: liked ? "Unlike" : "Like" },
+    { act:"pin",      icon: pinned ? "ti-pin-off" : "ti-pin",
+                      text: pinned ? "Unpin from Home" : "Pin to Home" },
+    { act:"radio",    icon:"ti-radio",             text:"Start radio from this" },
+  ];
+  if (removeLabel) opts.push({ act:"remove", icon:removeLabel.icon, text:removeLabel.text, danger:true });
+
+  $("tm-opts").innerHTML = opts.map(o =>
+    `<div class="modal-opt${o.danger?" danger":""}" data-act="${o.act}">
+       <i class="ti ${o.icon}"></i>${o.text}
+     </div>`).join("");
+
+  trackMenu.classList.add("open");
+}
+
+function closeTrackMenu() { trackMenu.classList.remove("open"); }
+$("tm-cancel").addEventListener("click", closeTrackMenu);
+trackMenu.addEventListener("click", e => { if (e.target === trackMenu) closeTrackMenu(); });
+
+$("tm-opts").addEventListener("click", async e => {
+  const opt = e.target.closest(".modal-opt[data-act]");
+  if (!opt) return;
+  const t = S.tmTrack, ctx = S.tmCtx;
+  closeTrackMenu();
+  if (!t) return;
+
+  switch (opt.dataset.act) {
+    case "playnext": queuePlayNext(t); break;
+    case "addqueue": queueAddLast(t); break;
+    case "addpl":
+      S.addPlTrack = t;
+      openAddToPlaylist();
+      break;
+    case "like": toggleLike(t.id, [t]); break;
+    case "pin":  togglePin(t); break;
+    case "radio":
+      toast("Building radio…");
+      try {
+        const r = await fetch(`/api/radio?song_id=${t.id}&lang=${S.homeLang}`);
+        const d = await r.json();
+        if (d.songs?.length) {
+          S.queue = [t, ...d.songs]; S.queueIdx = 0;
+          play(t, S.queue, 0);
+        } else toast("No radio available");
+      } catch { toast("Radio failed"); }
+      break;
+    case "remove":
+      if (ctx === "liked") {
+        S.liked = S.liked.filter(x => x.id !== t.id);
+        save(); patchLists(); updateNpLike();
+        if (S.page === "library") renderLibrary();
+        renderHomeLibraryShelves(); toast("Removed from Liked");
+      } else if (ctx === "history") {
+        S.history = S.history.filter(x => x.id !== t.id);
+        save();
+        if (S.page === "library") renderLibrary();
+        renderHomeLibraryShelves(); toast("Removed from history");
+      } else if (ctx === "playlist") {
+        const pl = S.playlists.find(p => p.id === S.viewPlId);
+        if (pl) {
+          pl.songs = pl.songs.filter(x => x.id !== t.id);
+          save(); renderPlaylistDetail(pl); renderHomeLibraryShelves();
+          toast(`Removed from "${pl.name}"`);
+        }
+      } else if (ctx === "queue") {
+        const i = S.queue.findIndex(x => x.id === t.id);
+        if (i !== -1) {
+          S.queue.splice(i, 1);
+          if (i < S.queueIdx) S.queueIdx--;
+          if (S.page === "queue") renderQueueEditable();
+          toast("Removed from queue");
+        }
+      }
+      break;
+  }
+});
+
+/* ── Long-press detection (touch + mouse), delegated on document ─────────── */
+(function initLongPress() {
+  const HOLD_MS = 480, MOVE_TOL = 12;
+  let timer = null, startX = 0, startY = 0, row = null, fired = false;
+
+  function clear() {
+    clearTimeout(timer); timer = null;
+    if (row) row.classList.remove("pressing");
+    row = null;
+  }
+
+  document.addEventListener("pointerdown", e => {
+    const r = e.target.closest(".track[data-id], .mini-card[data-id]");
+    if (!r) return;
+    // Skip interactive children — like button, grip, remove
+    if (e.target.closest("button, .q-grip")) return;
+    row = r; fired = false;
+    startX = e.clientX; startY = e.clientY;
+    row.classList.add("pressing");
+    timer = setTimeout(() => {
+      fired = true;
+      const ctx = tmContextOf(row);
+      const track = tmFindTrack(row.dataset.id, ctx);
+      if (track) {
+        if (navigator.vibrate) { try { navigator.vibrate(12); } catch {} }
+        openTrackMenu(track, ctx);
+      }
+      clear();
+    }, HOLD_MS);
+  }, { passive: true });
+
+  document.addEventListener("pointermove", e => {
+    if (!timer) return;
+    if (Math.abs(e.clientX - startX) > MOVE_TOL || Math.abs(e.clientY - startY) > MOVE_TOL) clear();
+  }, { passive: true });
+
+  document.addEventListener("pointerup", clear, { passive: true });
+  document.addEventListener("pointercancel", clear, { passive: true });
+
+  // Swallow the click that follows a fired long-press so the song
+  // doesn't also start playing underneath the menu
+  document.addEventListener("click", e => {
+    if (fired) { e.stopPropagation(); e.preventDefault(); fired = false; }
+  }, true);
+
+  // Desktop: right-click a row opens the same menu
+  document.addEventListener("contextmenu", e => {
+    const r = e.target.closest(".track[data-id], .mini-card[data-id]");
+    if (!r) return;
+    e.preventDefault();
+    const ctx = tmContextOf(r);
+    const track = tmFindTrack(r.dataset.id, ctx);
+    if (track) openTrackMenu(track, ctx);
+  });
+})();
+
+/* ── Playlist action sheet (replaces the old prompt()) ───────────────────── */
+const plMenuSheet = $("pl-menu");
+
+function openPlMenu(plid) {
+  const pl = S.playlists.find(p => p.id === plid);
+  if (!pl) return;
+  S.plMenuId = plid;
+  $("pl-menu-title").textContent = pl.name;
+  $("pl-menu-opts").innerHTML = `
+    <div class="modal-opt" data-plact="rename"><i class="ti ti-pencil"></i>Rename</div>
+    <div class="modal-opt" data-plact="duplicate"><i class="ti ti-copy"></i>Duplicate</div>
+    <div class="modal-opt" data-plact="pin"><i class="ti ti-pin${pl.pinned?"-off":""}"></i>${pl.pinned?"Unpin":"Pin to top"}</div>
+    <div class="modal-opt" data-plact="playnext"><i class="ti ti-player-track-next"></i>Queue all songs</div>
+    <div class="modal-opt danger" data-plact="delete"><i class="ti ti-trash"></i>Delete playlist</div>`;
+  plMenuSheet.classList.add("open");
+}
+function closePlMenu() { plMenuSheet.classList.remove("open"); }
+$("pl-menu-cancel").addEventListener("click", closePlMenu);
+plMenuSheet.addEventListener("click", e => { if (e.target === plMenuSheet) closePlMenu(); });
+
+$("pl-menu-opts").addEventListener("click", e => {
+  const opt = e.target.closest(".modal-opt[data-plact]");
+  if (!opt) return;
+  const pl = S.playlists.find(p => p.id === S.plMenuId);
+  closePlMenu();
+  if (!pl) return;
+
+  switch (opt.dataset.plact) {
+    case "rename": {
+      // Reuse the create-playlist modal in rename mode
+      S.renamePlId = pl.id;
+      $("create-pl-title").textContent = "Rename Playlist";
+      $("pl-create-confirm").textContent = "Save";
+      const inp = $("pl-name-input");
+      inp.value = pl.name;
+      $("create-pl-modal").classList.add("open");
+      setTimeout(() => { inp.focus(); inp.select(); }, 100);
+      break;
+    }
+    case "duplicate": {
+      const copy = { id: uid(), name: `${pl.name} copy`, songs: pl.songs.map(s => ({...s})) };
+      S.playlists.splice(S.playlists.indexOf(pl) + 1, 0, copy);
+      save(); renderPlaylists(); renderHomeLibraryShelves();
+      toast(`Duplicated as "${copy.name}"`);
+      break;
+    }
+    case "pin": {
+      pl.pinned = !pl.pinned;
+      save(); renderPlaylists(); renderHomeLibraryShelves();
+      toast(pl.pinned ? "Playlist pinned" : "Playlist unpinned");
+      break;
+    }
+    case "playnext": {
+      if (!pl.songs.length) { toast("Playlist is empty"); break; }
+      for (const s of pl.songs) if (!S.queue.some(q => q.id === s.id)) S.queue.push({...s});
+      S.queueIdx = S.queue.findIndex(t => t.id === S.track?.id);
+      toast(`Queued ${pl.songs.length} songs`);
+      break;
+    }
+    case "delete": {
+      if (!confirm(`Delete "${pl.name}"? This can't be undone.`)) break;
+      S.playlists = S.playlists.filter(p => p.id !== pl.id);
+      save();
+      $("pl-detail-sheet").classList.remove("open");
+      renderLibrary(); renderHomeLibraryShelves();
+      toast(`"${pl.name}" deleted`);
+      break;
+    }
+  }
+});
+
+/* Rename mode: hook into the existing create-confirm handler via capture,
+   so the original "create" behaviour is skipped when we're renaming. */
+$("pl-create-confirm").addEventListener("click", e => {
+  if (!S.renamePlId) return;              // normal create flow
+  e.stopImmediatePropagation();           // don't run the create handler
+  const pl = S.playlists.find(p => p.id === S.renamePlId);
+  const name = $("pl-name-input").value.trim();
+  S.renamePlId = null;
+  $("create-pl-title").textContent = "New Playlist";
+  $("pl-create-confirm").textContent = "Create Playlist";
+  if (pl && name) {
+    pl.name = name;
+    save();
+    $("pl-detail-title").textContent = name;
+    renderPlaylists(); renderHomeLibraryShelves();
+    toast("Renamed");
+  }
+  $("create-pl-modal").classList.remove("open");
+}, true);
+$("pl-create-cancel").addEventListener("click", () => {
+  S.renamePlId = null;
+  $("create-pl-title").textContent = "New Playlist";
+  $("pl-create-confirm").textContent = "Create Playlist";
+});
+
+/* ── Queue back button (queue left the nav bar) ──────────────────────────── */
+const qBack = $("queue-back");
+if (qBack) qBack.addEventListener("click", () => goto("home"));
+
+/* ── Audio ↔ UI state sync ───────────────────────────────────────────────
+   The OS can pause/resume audio without touching our buttons (phone call,
+   audio-focus loss, media notification, bluetooth controls). Listening to
+   the element itself keeps every play icon truthful. */
+audio.addEventListener("play",  () => { S.playing = true;  setPlayIcons(true);  vinylPlay(true);  patchLists(); });
+audio.addEventListener("pause", () => {
+  // Ignore the pause that fires while switching tracks
+  if (S.loading) return;
+  S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists();
+});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {   // resync after returning from background
+    S.playing = !audio.paused && !!audio.src;
+    setPlayIcons(S.playing); vinylPlay(S.playing);
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   v24: dynamic album colour, mini-player swipe, playlist drag-reorder
+═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Dynamic colour from album art ───────────────────────────────────────
+   Samples the artwork on a tiny offscreen canvas and derives two tones for
+   the now-playing wash. Cached per image URL. Cross-origin art can taint
+   the canvas — that throws, we catch, and the default gradient stays. */
+const _artColorCache = new Map();
+
+function _clampTone(r, g, b) {
+  // Push very light / very dark samples toward a usable mid-tone so the
+  // wash always reads against the text, in either theme.
+  const lum = (0.299*r + 0.587*g + 0.114*b) / 255;
+  let f = 1;
+  if (lum > 0.72) f = 0.72 / lum;
+  if (lum < 0.16) f = 1.5;
+  return [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v * f))));
+}
+
+function extractArtColors(url) {
+  if (!url) return Promise.resolve(null);
+  if (_artColorCache.has(url)) return Promise.resolve(_artColorCache.get(url));
+
+  return new Promise(resolve => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    const done = val => { _artColorCache.set(url, val); resolve(val); };
+    img.onerror = () => done(null);
+    img.onload = () => {
+      try {
+        const N = 16;                       // tiny sample grid — fast, plenty
+        const c = document.createElement("canvas");
+        c.width = c.height = N;
+        const ctx = c.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, N, N);
+        const px = ctx.getImageData(0, 0, N, N).data;
+
+        // Average the most saturated pixels — averaging everything gives mud
+        let best = [], rs = 0, gs = 0, bs = 0, n = 0;
+        for (let i = 0; i < px.length; i += 4) {
+          const r = px[i], g = px[i+1], b = px[i+2];
+          const mx = Math.max(r,g,b), mn = Math.min(r,g,b);
+          best.push({ r, g, b, sat: mx - mn });
+        }
+        best.sort((a, b2) => b2.sat - a.sat);
+        for (const p of best.slice(0, Math.max(6, best.length >> 2))) {
+          rs += p.r; gs += p.g; bs += p.b; n++;
+        }
+        if (!n) return done(null);
+        const [r, g, b] = _clampTone(rs/n, gs/n, bs/n);
+        done({
+          a: `rgba(${r},${g},${b},.55)`,
+          b: `rgba(${r},${g},${b},.18)`,
+          edge: `rgba(${r},${g},${b},.45)`,
+        });
+      } catch { done(null); }   // tainted canvas / CORS — fall back quietly
+    };
+    img.src = url;
+  });
+}
+
+async function applyArtColors(track) {
+  const now  = $("now-screen");
+  const mini = $("mini-player");
+  const clear = () => {
+    now.classList.remove("tinted");
+    mini.classList.remove("tinted");
+  };
+  if (!track?.image) { clear(); return; }
+
+  const col = await extractArtColors(track.image);
+  // The song may have changed while we were sampling — don't paint stale colour
+  if (!col || S.track?.image !== track.image) { if (!col) clear(); return; }
+
+  now.style.setProperty("--art-1", col.a);
+  now.style.setProperty("--art-2", col.b);
+  now.classList.add("tinted");
+  mini.style.setProperty("--art-1", col.edge);
+  mini.classList.add("tinted");
+}
+
+/* ── Mini-player swipe ───────────────────────────────────────────────────
+   Swipe left → next, right → previous, up → open the full player.
+   Horizontal intent is locked in before we start moving so a vertical
+   page scroll that begins on the bar still scrolls the page. */
+(function initMiniSwipe() {
+  const bar = $("mini-player");
+  if (!bar) return;
+
+  const SKIP_PX = 68, OPEN_PX = 46, LOCK_PX = 10;
+  let x0 = 0, y0 = 0, dx = 0, dy = 0;
+  let active = false, axis = null, id = null;
+
+  const reset = () => {
+    bar.classList.remove("swiping", "hint-next", "hint-prev");
+    bar.style.transform = "";
+    bar.style.opacity = "";
+    active = false; axis = null; id = null; dx = dy = 0;
+  };
+
+  bar.addEventListener("pointerdown", e => {
+    if (e.target.closest(".mini-btn")) return;   // let the buttons work
+    if (!S.track) return;
+    active = true; axis = null; id = e.pointerId;
+    x0 = e.clientX; y0 = e.clientY; dx = dy = 0;
+  }, { passive: true });
+
+  bar.addEventListener("pointermove", e => {
+    if (!active || e.pointerId !== id) return;
+    dx = e.clientX - x0;
+    dy = e.clientY - y0;
+
+    if (!axis) {
+      if (Math.abs(dx) > LOCK_PX || Math.abs(dy) > LOCK_PX) {
+        axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+        if (axis === "x") { bar.classList.add("swiping"); bar.setPointerCapture(id); }
+        else if (dy > 0) { reset(); return; }   // downward — let the page scroll
+        else { bar.classList.add("swiping"); bar.setPointerCapture(id); }
+      }
+      return;
+    }
+
+    if (axis === "x") {
+      bar.style.transform = `translateX(${dx * 0.85}px)`;
+      bar.style.opacity = String(Math.max(0.45, 1 - Math.abs(dx) / 260));
+      bar.classList.toggle("hint-next", dx < -SKIP_PX * 0.6);
+      bar.classList.toggle("hint-prev", dx >  SKIP_PX * 0.6);
+    } else {
+      const up = Math.min(0, dy);
+      bar.style.transform = `translateY(${up * 0.5}px)`;
+    }
+  }, { passive: true });
+
+  function finish() {
+    if (!active) return;
+    const _dx = dx, _dy = dy, _axis = axis;
+    bar.classList.add("settling");
+    bar.classList.remove("swiping");
+
+    if (_axis === "x" && Math.abs(_dx) > SKIP_PX) {
+      // Fling the bar off, then swap the track and let it spring back
+      bar.style.transform = `translateX(${_dx > 0 ? 340 : -340}px)`;
+      bar.style.opacity = "0";
+      setTimeout(() => {
+        _dx > 0 ? playPrev() : playNext();
+        bar.classList.remove("settling");
+        bar.style.transform = `translateX(${_dx > 0 ? -60 : 60}px)`;
+        bar.style.opacity = "0";
+        requestAnimationFrame(() => {
+          bar.classList.add("settling");
+          bar.style.transform = "";
+          bar.style.opacity = "";
+        });
+      }, 170);
+    } else if (_axis === "y" && _dy < -OPEN_PX) {
+      bar.style.transform = "";
+      bar.style.opacity = "";
+      openNowScreen();
+    } else {
+      bar.style.transform = "";
+      bar.style.opacity = "";
+    }
+
+    setTimeout(() => bar.classList.remove("settling"), 320);
+    active = false; axis = null; id = null;
+    bar.classList.remove("hint-next", "hint-prev");
+  }
+
+  bar.addEventListener("pointerup", finish, { passive: true });
+  bar.addEventListener("pointercancel", reset, { passive: true });
+
+  // A swipe shouldn't also register as a tap that opens the player
+  bar.addEventListener("click", e => {
+    if (Math.abs(dx) > LOCK_PX || Math.abs(dy) > LOCK_PX) {
+      e.stopImmediatePropagation(); e.preventDefault();
+      dx = dy = 0;
+    }
+  }, true);
+})();
+
+/* ── Playlist drag-to-reorder ────────────────────────────────────────────
+   Reordering is enabled in Select mode, where rows already aren't
+   play-on-tap, so dragging can't fight with playback. */
+function initPlaylistReorder(pl) {
+  const list = $("pl-detail-list");
+  if (!list || !S.plEditMode) return;
+  let from = null;
+
+  list.querySelectorAll(".pl-row").forEach(row => {
+    row.setAttribute("draggable", "true");
+    row.addEventListener("dragstart", e => {
+      from = parseInt(row.dataset.idx);
+      row.classList.add("dragging");
+      try { e.dataTransfer.effectAllowed = "move"; } catch {}
+    });
+    row.addEventListener("dragend", () => { row.classList.remove("dragging"); from = null; });
+    row.addEventListener("dragover", e => { e.preventDefault(); row.classList.add("drag-over"); });
+    row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+    row.addEventListener("drop", e => {
+      e.preventDefault();
+      row.classList.remove("drag-over");
+      const to = parseInt(row.dataset.idx);
+      if (from === null || isNaN(to) || from === to) return;
+      const [moved] = pl.songs.splice(from, 1);
+      pl.songs.splice(to, 0, moved);
+      save();
+      renderPlaylistDetail(pl);
+      renderHomeLibraryShelves();
+    });
+
+    // Touch: long-press the grip then drag, mirroring the queue screen
+    const grip = row.querySelector(".pl-grip");
+    if (!grip) return;
+    grip.addEventListener("pointerdown", ev => {
+      ev.preventDefault();
+      const startIdx = parseInt(row.dataset.idx);
+      row.classList.add("dragging");
+      const rows = [...list.querySelectorAll(".pl-row")];
+
+      const onMove = m => {
+        const el = document.elementFromPoint(m.clientX, m.clientY)?.closest(".pl-row");
+        rows.forEach(r => r.classList.toggle("drag-over", r === el && r !== row));
+      };
+      const onUp = m => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        row.classList.remove("dragging");
+        const el = document.elementFromPoint(m.clientX, m.clientY)?.closest(".pl-row");
+        rows.forEach(r => r.classList.remove("drag-over"));
+        const to = el ? parseInt(el.dataset.idx) : NaN;
+        if (!isNaN(to) && to !== startIdx) {
+          const [moved] = pl.songs.splice(startIdx, 1);
+          pl.songs.splice(to, 0, moved);
+          save();
+          renderPlaylistDetail(pl);
+          renderHomeLibraryShelves();
+        }
+      };
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
+    });
+  });
+}
