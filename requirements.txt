@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Naada · నాద — Python dependencies
+#
+# Core runtime (required everywhere — Termux or a dedicated server):
+#   pip install -r requirements.txt
+#
+# Version pins use compatible-release (~=) so you get bug-fix updates within a
+# known-good major.minor, without surprise breaking changes on a fresh deploy.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Web framework
+Flask~=3.1
+
+# HTTP client for upstream APIs (JioSaavn, LRCLIB, Gemini)
+requests~=2.32
+
+# DES-ECB stream-URL decryption
+cryptography~=46.0
+
+# ─────────────────────────────────────────────────────────────────────────
+# Production server (for a dedicated / always-on host — NOT needed on Termux,
+# where naada.sh runs Flask's built-in server). Gunicorn is the recommended
+# WSGI server for deployment:
+#
+#   gunicorn -w 2 -b 0.0.0.0:5000 app:app
+#
+# (or with more workers, behind a reverse proxy like nginx for TLS)
+# ─────────────────────────────────────────────────────────────────────────
+gunicorn~=23.0
+
+# ─────────────────────────────────────────────────────────────────────────
+# Optional extras (uncomment if you want them):
+# ─────────────────────────────────────────────────────────────────────────
+# CORS headers — only needed if you serve the API to a DIFFERENT origin than
+# the one hosting the frontend. Same-origin (the default) does not need this.
+# flask-cors~=5.0
+#
+# Regenerating PNG app icons from the SVG (dev-only utility):
+# pillow~=11.0

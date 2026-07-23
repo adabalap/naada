@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Naada · systemd service (dedicated Ubuntu server, behind nginx + Cloudflare)
+#
+# Install:
+#   sudo cp /opt/naada/deploy/naada.service /etc/systemd/system/naada.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now naada
+#
+# Manage:
+#   sudo systemctl status naada
+#   sudo systemctl restart naada
+#   sudo journalctl -u naada -f          # live logs
+#
+# Assumes the code lives in /opt/naada and a virtualenv at /opt/naada/.venv
+# (adjust paths below if yours differ).
+# ─────────────────────────────────────────────────────────────────────────
+[Unit]
+Description=Naada music server (gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/naada
+
+# Serve plain HTTP on localhost — nginx terminates TLS in front of us.
+Environment=NAADA_HTTP_ONLY=1
+Environment=NAADA_HOST=127.0.0.1
+Environment=NAADA_PORT=5334
+# Gemini key can live here OR in config.json (config.json takes precedence).
+# Environment=GEMINI_API_KEY=your-key-here
+
+# 2 workers is plenty for personal use; bump -w for more concurrency.
+# --timeout 120 covers slow upstream calls (Gemini, JioSaavn).
+ExecStart=/opt/naada/.venv/bin/gunicorn \
+    --workers 2 \
+    --bind 127.0.0.1:5334 \
+    --timeout 120 \
+    --access-logfile - \
+    --error-logfile - \
+    app:app
+
+Restart=always
+RestartSec=3
+
+# Light hardening (optional but recommended)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

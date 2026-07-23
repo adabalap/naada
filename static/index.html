@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#4A1A6B">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Naada">
+  <meta name="description" content="Your personal Indian music player — ad-free, 320kbps">
+  <title>Naada · నాద</title>
+
+  <!-- ── Open Graph / link preview (WhatsApp, Telegram, social) ──────────
+       Image MUST be an absolute URL for WhatsApp to render it. Update the
+       domain below if you ever change it. -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Naada">
+  <meta property="og:title" content="Naada · నాద">
+  <meta property="og:description" content="Your personal Indian music player — ad-free, 320kbps. Hindi, Telugu, Tamil & English.">
+  <meta property="og:url" content="https://naada.adabala.com/">
+  <meta property="og:image" content="https://naada.adabala.com/static/icons/icon-512.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="512">
+  <meta property="og:image:height" content="512">
+  <meta property="og:image:alt" content="Naada logo">
+
+  <!-- Twitter / X card -->
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Naada · నాద">
+  <meta name="twitter:description" content="Your personal Indian music player — ad-free, 320kbps.">
+  <meta name="twitter:image" content="https://naada.adabala.com/static/icons/icon-512.png">
+
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png?v=22">
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png?v=22">
+  <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg?v=22">
+  <link rel="shortcut icon" href="/favicon.ico">
+  <link rel="apple-touch-icon" href="/static/icons/icon-180.png?v=22">
+  <link rel="stylesheet" href="/static/app.css?v=22">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Header ─────────────────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="logo">
+      <div class="logo-mark" id="logo-mark">
+        <svg viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect class="wb wb1" x="9.5" y="1" width="3" height="20" rx="1.5" fill="white"/>
+          <rect class="wb wb2" x="4.5" y="4.5" width="2.8" height="13" rx="1.4" fill="white" opacity=".85"/>
+          <rect class="wb wb3" x="14.7" y="4.5" width="2.8" height="13" rx="1.4" fill="white" opacity=".85"/>
+          <rect class="wb wb4" x="0" y="8" width="2.5" height="6" rx="1.25" fill="white" opacity=".55"/>
+          <rect class="wb wb5" x="19.5" y="8" width="2.5" height="6" rx="1.25" fill="white" opacity=".55"/>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-name">Naada</div>
+        <div class="logo-sub">నాద · sound</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <button class="lang-pill" id="lang-pill" aria-haspopup="true" aria-expanded="false">
+        <span class="lang-pill-glyph" id="lang-pill-glyph">త</span>
+        <i class="ti ti-chevron-down lang-pill-caret"></i>
+      </button>
+      <button class="icon-btn" id="btn-sleep" aria-label="Sleep timer"><i class="ti ti-moon"></i></button>
+      <button class="icon-btn" id="btn-lyrics" aria-label="Lyrics"><i class="ti ti-microphone-2"></i></button>
+    </div>
+  </header>
+
+  <!-- Language picker popover (anchored under the header pill) -->
+  <div class="lang-pop" id="lang-pop" role="menu" aria-label="Choose language" style="display:none">
+    <button class="lang-opt" data-lang="telugu"  role="menuitem"><span class="lang-opt-glyph">త</span> Telugu</button>
+    <button class="lang-opt" data-lang="hindi"   role="menuitem"><span class="lang-opt-glyph">अ</span> Hindi</button>
+    <button class="lang-opt" data-lang="tamil"   role="menuitem"><span class="lang-opt-glyph">த</span> Tamil</button>
+    <button class="lang-opt" data-lang="english" role="menuitem"><span class="lang-opt-glyph">A</span> English</button>
+  </div>
+
+  <!-- ── Page container ──────────────────────────────────────────────── -->
+  <div class="page-container">
+
+    <!-- HOME ──────────────────────────────────────────────────────────── -->
+    <main class="page active" id="page-home" aria-label="Home">
+      <div class="home-hero">
+        <div class="home-hero-row">
+          <div>
+            <div class="home-greeting" id="greeting">Good morning</div>
+            <div class="home-title">What'll you <span>play today?</span></div>
+          </div>
+          <button class="icon-btn" id="btn-home-settings" aria-label="Customize home"><i class="ti ti-adjustments"></i></button>
+        </div>
+      </div>
+
+      <!-- Quick access: jump back in (recents) -->
+      <section class="shelf" id="shelf-recents" data-shelf="recents">
+        <div class="sec-hdr shelf-hdr" data-collapse="recents">
+          <span class="sec-title">Jump back in</span>
+          <i class="ti ti-chevron-down shelf-caret"></i>
+        </div>
+        <div class="shelf-body">
+          <div id="home-recents" class="h-row" aria-label="Recently played"></div>
+        </div>
+      </section>
+
+      <!-- Your liked songs preview -->
+      <section class="shelf" id="shelf-liked" data-shelf="liked">
+        <div class="sec-hdr shelf-hdr" data-collapse="liked">
+          <span class="sec-title">Your liked songs</span>
+          <span class="shelf-hdr-right">
+            <span class="sec-more" id="home-liked-more">See all</span>
+            <i class="ti ti-chevron-down shelf-caret"></i>
+          </span>
+        </div>
+        <div class="shelf-body">
+          <div id="home-liked" class="h-row" aria-label="Liked songs"></div>
+        </div>
+      </section>
+
+      <!-- Your playlists -->
+      <section class="shelf" id="shelf-playlists" data-shelf="playlists">
+        <div class="sec-hdr shelf-hdr" data-collapse="playlists">
+          <span class="sec-title">Your playlists</span>
+          <span class="shelf-hdr-right">
+            <span class="sec-more" id="home-pl-more">See all</span>
+            <i class="ti ti-chevron-down shelf-caret"></i>
+          </span>
+        </div>
+        <div class="shelf-body">
+          <div id="home-playlists" class="h-row" aria-label="Your playlists"></div>
+        </div>
+      </section>
+
+      <!-- Trending songs -->
+      <section class="shelf" id="shelf-trending" data-shelf="trending">
+        <div class="sec-hdr shelf-hdr" data-collapse="trending">
+          <span class="sec-title" id="chart-title">Trending Now</span>
+          <span class="shelf-hdr-right">
+            <span class="badge badge-purple">LIVE</span>
+            <i class="ti ti-chevron-down shelf-caret"></i>
+          </span>
+        </div>
+        <div class="shelf-body">
+          <div id="chart-list" role="list" aria-label="Trending songs">
+            <div class="state-msg"><div class="spinner"></div><p>Loading…</p></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Chartbusters (top charts) -->
+      <section class="shelf" id="shelf-chartbusters" data-shelf="chartbusters">
+        <div class="sec-hdr shelf-hdr" data-collapse="chartbusters">
+          <span class="sec-title">Chartbusters</span>
+          <span class="shelf-hdr-right">
+            <span class="badge badge-gold">TOP 50</span>
+            <i class="ti ti-chevron-down shelf-caret"></i>
+          </span>
+        </div>
+        <div class="shelf-body">
+          <div id="chartbusters-list" role="list" aria-label="Chartbusters"></div>
+        </div>
+      </section>
+
+      <!-- New releases -->
+      <section class="shelf" id="shelf-albums" data-shelf="albums">
+        <div class="sec-hdr shelf-hdr" data-collapse="albums">
+          <span class="sec-title">New Releases</span>
+          <i class="ti ti-chevron-down shelf-caret"></i>
+        </div>
+        <div class="shelf-body">
+          <div id="new-releases" class="h-row" aria-label="New releases"></div>
+        </div>
+      </section>
+
+      <!-- Movie songs -->
+      <section class="shelf" id="shelf-movies" data-shelf="movies">
+        <div class="sec-hdr shelf-hdr" data-collapse="movies">
+          <span class="sec-title">Latest Movie Songs</span>
+          <i class="ti ti-chevron-down shelf-caret"></i>
+        </div>
+        <div class="shelf-body">
+          <div id="home-movies" class="h-row" aria-label="Movie songs"></div>
+        </div>
+      </section>
+
+      <!-- Featured playlists -->
+      <section class="shelf" id="shelf-featured" data-shelf="featured">
+        <div class="sec-hdr shelf-hdr" data-collapse="featured">
+          <span class="sec-title">Made for you</span>
+          <i class="ti ti-chevron-down shelf-caret"></i>
+        </div>
+        <div class="shelf-body">
+          <div id="home-featured" class="h-row" aria-label="Featured playlists"></div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- SEARCH ────────────────────────────────────────────────────────── -->
+    <main class="page" id="page-search" aria-label="Search">
+      <div class="search-top">
+        <div class="search-box" role="search">
+          <i class="ti ti-search" aria-hidden="true"></i>
+          <input id="search-input" type="search" placeholder="Songs, artists, albums…"
+            autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Search">
+          <button id="search-clear" class="search-clear" aria-label="Clear search"><i class="ti ti-x"></i></button>
+        </div>
+      </div>
+      <div class="search-chips" role="tablist" aria-label="Search type">
+        <button class="s-chip active" data-stype="songs"   role="tab">Songs</button>
+        <button class="s-chip"        data-stype="albums"  role="tab">Albums</button>
+        <button class="s-chip"        data-stype="artists" role="tab">Artists</button>
+        <button class="s-chip s-chip-ai" data-stype="mood" role="tab"><i class="ti ti-sparkles"></i> Mood</button>
+      </div>
+      <div id="mood-panel" style="display:none">
+        <div class="mood-box">
+          <input id="mood-input" type="text" placeholder="e.g. rainy evening Telugu melodies"
+            autocomplete="off" aria-label="Describe a mood">
+          <button id="mood-go" aria-label="Build playlist"><i class="ti ti-arrow-right"></i></button>
+        </div>
+        <div class="mood-suggestions" id="mood-suggestions">
+          <button class="mood-tag">late night drive</button>
+          <button class="mood-tag">90s Hindi romance</button>
+          <button class="mood-tag">high-energy workout</button>
+          <button class="mood-tag">peaceful morning</button>
+          <button class="mood-tag">monsoon melodies</button>
+        </div>
+      </div>
+      <div id="search-results" aria-live="polite" aria-label="Results">
+        <div class="state-msg">
+          <i class="ti ti-search" aria-hidden="true"></i>
+          <p>Search any song,<br>artist, or album</p>
+        </div>
+      </div>
+    </main>
+
+    <!-- LIBRARY ───────────────────────────────────────────────────────── -->
+    <main class="page" id="page-library" aria-label="Library">
+      <div class="lib-hero">
+        <div class="lib-hero-title">My Library</div>
+        <div class="lib-hero-sub">Liked songs, playlists & history</div>
+      </div>
+      <div class="lib-stats">
+        <div class="lib-stat" id="stat-card-liked" role="button" tabindex="0"><div class="lib-stat-n" id="stat-liked">0</div><div class="lib-stat-l">Liked</div></div>
+        <div class="lib-stat" id="stat-card-playlists" role="button" tabindex="0"><div class="lib-stat-n" id="stat-playlists">0</div><div class="lib-stat-l">Playlists</div></div>
+        <div class="lib-stat" id="stat-card-history" role="button" tabindex="0"><div class="lib-stat-n" id="stat-history">0</div><div class="lib-stat-l">Played</div></div>
+      </div>
+
+      <!-- Liked songs -->
+      <div class="sec-hdr" id="sec-liked">
+        <span class="sec-title">Liked Songs</span>
+        <span class="sec-actions">
+          <span class="sec-more" id="liked-shuffle">Shuffle</span>
+          <span class="sec-more danger" id="liked-clear">Clear</span>
+        </span>
+      </div>
+      <div id="liked-list" role="list" aria-label="Liked songs">
+        <div class="state-msg"><i class="ti ti-heart"></i><p>Like songs to save them here</p></div>
+      </div>
+
+      <div class="section-divider"></div>
+
+      <!-- Playlists -->
+      <div class="sec-hdr" id="sec-playlists">
+        <span class="sec-title">Playlists</span>
+        <span class="sec-more" id="new-playlist-btn">+ New</span>
+      </div>
+      <div id="playlist-grid" class="pl-grid"></div>
+
+      <div class="section-divider"></div>
+
+      <!-- History -->
+      <div class="sec-hdr" id="sec-history">
+        <span class="sec-title">Recently Played</span>
+        <span class="sec-more danger" id="clear-history">Clear</span>
+      </div>
+      <div id="history-list" role="list" aria-label="Recently played">
+        <div class="state-msg"><i class="ti ti-history"></i><p>Your history appears here</p></div>
+      </div>
+    </main>
+
+    <!-- QUEUE ─────────────────────────────────────────────────────────── -->
+    <main class="page" id="page-queue" aria-label="Queue">
+      <div class="sec-hdr" style="padding-top:16px">
+        <span class="sec-title">Play Queue</span>
+        <span class="badge badge-teal" id="queue-badge">0 songs</span>
+      </div>
+      <div class="queue-actions" id="queue-actions" style="display:none">
+        <button class="queue-action-btn" id="queue-clear"><i class="ti ti-trash"></i> Clear</button>
+        <span class="queue-hint">Drag <i class="ti ti-grip-vertical"></i> to reorder · swipe row for options</span>
+      </div>
+      <div id="queue-list" role="list" aria-label="Queue">
+        <div class="state-msg"><i class="ti ti-list"></i><p>Queue is empty</p></div>
+      </div>
+    </main>
+
+    <!-- TRIVIA ────────────────────────────────────────────────────────── -->
+    <main class="page" id="page-trivia" aria-label="Trivia">
+      <div class="lib-hero">
+        <div class="lib-hero-title">Music Trivia</div>
+        <div class="lib-hero-sub">AI cards from songs you've played</div>
+      </div>
+      <div class="sec-hdr" style="padding-top:4px">
+        <span class="sec-title">For You</span>
+        <span class="sec-more" id="trivia-refresh"><i class="ti ti-refresh"></i> New cards</span>
+      </div>
+      <div id="trivia-list" aria-label="Trivia cards">
+        <div class="state-msg"><i class="ti ti-bulb"></i><p>Play a few songs, then tap<br>"New cards" for trivia</p></div>
+      </div>
+    </main>
+
+  </div><!-- /page-container -->
+
+  <!-- ── Bottom nav ─────────────────────────────────────────────────── -->
+  <nav class="bottom-nav" aria-label="Main navigation">
+    <div class="nav-item active" data-page="home"><i class="ti ti-home"></i><span>Home</span></div>
+    <div class="nav-item" data-page="search"><i class="ti ti-search"></i><span>Search</span></div>
+    <div class="nav-item" data-page="library"><i class="ti ti-heart"></i><span>Library</span></div>
+    <div class="nav-item" data-page="trivia"><i class="ti ti-bulb"></i><span>Trivia</span></div>
+    <div class="nav-item" data-page="queue"><i class="ti ti-list"></i><span>Queue</span></div>
+  </nav>
+
+  <!-- ── Mini Player (compact bar, tap to expand) ──────────────────────── -->
+  <div class="mini-player" id="mini-player" role="button" tabindex="0" aria-label="Open now playing">
+    <div class="mini-progress" id="mini-progress"></div>
+    <div class="mini-art" id="mini-art" aria-hidden="true"><span id="mini-art-ph">🎵</span></div>
+    <div class="mini-info">
+      <div class="mini-title" id="mini-title">Tap a song to play</div>
+      <div class="mini-artist" id="mini-artist"></div>
+    </div>
+    <div class="mini-controls">
+      <button class="mini-btn" id="mini-like" aria-label="Like"><i class="ti ti-heart"></i></button>
+      <button class="mini-btn mini-play" id="mini-play" aria-label="Play / Pause"><i class="ti ti-player-play" id="mini-pp-icon"></i></button>
+      <button class="mini-btn" id="mini-next" aria-label="Next"><i class="ti ti-player-skip-forward"></i></button>
+    </div>
+  </div>
+
+</div><!-- /app -->
+
+<!-- ── Full Now-Playing screen ────────────────────────────────────────── -->
+<div class="now-screen" id="now-screen" role="dialog" aria-modal="true" aria-label="Now playing">
+  <div class="now-loader" id="player-loader"><div class="spinner"></div></div>
+  <div class="now-header">
+    <button class="icon-btn" id="now-close" aria-label="Minimize"><i class="ti ti-chevron-down"></i></button>
+    <div class="now-source" id="now-source">Now Playing</div>
+    <button class="icon-btn" id="now-queue-btn" aria-label="Show queue"><i class="ti ti-list"></i></button>
+  </div>
+
+  <div class="now-art-wrap">
+    <div class="now-vinyl" id="np-vinyl">
+      <div class="np-vinyl-ph" id="np-art-ph">🎵</div>
+      <img id="np-art-img" src="" alt="" style="display:none">
+    </div>
+  </div>
+
+  <div class="now-meta">
+    <div class="now-title"  id="np-title">—</div>
+    <div class="now-artist" id="np-artist">—</div>
+  </div>
+
+  <div class="now-actions">
+    <button class="now-act" id="np-like" aria-label="Like"><i class="ti ti-heart"></i></button>
+    <button class="now-act" id="np-add-pl" aria-label="Add to playlist"><i class="ti ti-playlist-add"></i></button>
+    <button class="now-act" id="np-lyrics" aria-label="Lyrics"><i class="ti ti-microphone-2"></i></button>
+    <button class="now-act" id="np-story" aria-label="Story / trivia"><i class="ti ti-sparkles"></i></button>
+    <button class="now-act" id="np-radio" aria-label="Start radio"><i class="ti ti-radio"></i></button>
+  </div>
+
+  <div class="ai-card" id="ai-anecdote" style="display:none">
+    <div class="ai-card-head"><i class="ti ti-sparkles"></i> <span>Story</span></div>
+    <div class="ai-card-body" id="ai-anecdote-body"></div>
+  </div>
+
+  <div class="now-seek">
+    <span class="seek-t" id="seek-cur">0:00</span>
+    <input type="range" class="seek-bar" id="seek-bar" min="0" max="100" value="0" step="0.1" aria-label="Seek">
+    <span class="seek-t end" id="seek-dur">--:--</span>
+  </div>
+
+  <div class="now-controls">
+    <button class="ctrl-btn" id="ctrl-shuffle" aria-label="Shuffle"><i class="ti ti-arrows-shuffle"></i></button>
+    <button class="ctrl-btn" id="ctrl-prev" aria-label="Previous"><i class="ti ti-player-skip-back"></i></button>
+    <button class="play-btn big" id="ctrl-play" aria-label="Play / Pause"><i class="ti ti-player-play" id="pp-icon"></i></button>
+    <button class="ctrl-btn" id="ctrl-next" aria-label="Next"><i class="ti ti-player-skip-forward"></i></button>
+    <button class="ctrl-btn" id="ctrl-repeat" aria-label="Repeat"><i class="ti ti-repeat" id="repeat-icon"></i></button>
+  </div>
+</div>
+
+<!-- ── Lyrics sheet ───────────────────────────────────────────────────── -->
+<div class="sheet" id="lyrics-sheet" role="dialog" aria-modal="true" aria-label="Lyrics">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header">
+    <button class="icon-btn" id="lyrics-close" aria-label="Close"><i class="ti ti-chevron-down"></i></button>
+    <span class="sheet-title" id="lyrics-title">Lyrics</span>
+    <span class="lyrics-badge" id="lyrics-source"></span>
+  </div>
+  <div class="sheet-body">
+    <div class="lyrics-art" id="lyrics-art">🎵</div>
+    <div class="lyrics-text" id="lyrics-text"><p>Play a song first</p></div>
+    <div class="lyrics-copyright" id="lyrics-copy"></div>
+  </div>
+</div>
+
+<!-- ── Add to playlist sheet ──────────────────────────────────────────── -->
+<div class="sheet" id="add-pl-sheet" role="dialog" aria-modal="true" aria-label="Add to playlist">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header">
+    <button class="icon-btn" id="add-pl-close" aria-label="Close"><i class="ti ti-x"></i></button>
+    <span class="sheet-title">Add to playlist</span>
+    <button class="icon-btn" id="add-pl-new" aria-label="New playlist"><i class="ti ti-plus"></i></button>
+  </div>
+  <div class="sheet-body">
+    <div id="pl-select-list" class="pl-select-list"></div>
+  </div>
+</div>
+
+<!-- ── Playlist detail sheet ──────────────────────────────────────────── -->
+<div class="sheet" id="pl-detail-sheet" role="dialog" aria-modal="true" aria-label="Playlist">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header">
+    <button class="icon-btn" id="pl-detail-close" aria-label="Close"><i class="ti ti-chevron-down"></i></button>
+    <span class="sheet-title" id="pl-detail-title">Playlist</span>
+    <button class="icon-btn" id="pl-detail-menu" aria-label="Playlist options"><i class="ti ti-dots-vertical"></i></button>
+  </div>
+  <div class="sheet-body">
+    <div class="sec-hdr" style="padding:0 0 12px">
+      <span class="sec-more" id="pl-edit-toggle">Edit</span>
+      <span class="sec-more" id="pl-play-all">▶ Play all</span>
+    </div>
+    <div id="pl-detail-list" role="list"></div>
+  </div>
+</div>
+
+<!-- ── Home settings sheet ────────────────────────────────────────────── -->
+<div class="sheet" id="home-settings-sheet" role="dialog" aria-modal="true" aria-label="Customize home">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header">
+    <button class="icon-btn" id="home-settings-close" aria-label="Close"><i class="ti ti-chevron-down"></i></button>
+    <span class="sheet-title">Customize Home</span>
+    <div style="width:38px"></div>
+  </div>
+  <div class="sheet-body">
+    <p class="settings-hint">Toggle which sections appear on your home page.</p>
+    <div id="settings-shelf-list" class="settings-list"></div>
+    <div class="settings-section">
+      <div class="settings-row">
+        <span>Default language</span>
+        <select id="settings-default-lang" class="settings-select">
+          <option value="telugu">Telugu</option>
+          <option value="hindi">Hindi</option>
+          <option value="tamil">Tamil</option>
+          <option value="english">English</option>
+        </select>
+      </div>
+      <label class="settings-toggle" style="margin-top:10px">
+        <span>✨ Show AI story card when a song plays</span>
+        <input type="checkbox" id="settings-ai-anecdote">
+      </label>
+      <p class="settings-hint" id="settings-ai-hint" style="margin-top:8px"></p>
+    </div>
+
+    <!-- About / brag card -->
+    <div class="settings-section">
+      <button class="about-open" id="about-open">
+        <span><i class="ti ti-info-circle"></i> About Naada</span>
+        <i class="ti ti-chevron-right"></i>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── About sheet ────────────────────────────────────────────────────── -->
+<div class="sheet" id="about-sheet" role="dialog" aria-modal="true" aria-label="About Naada">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header">
+    <button class="icon-btn" id="about-close" aria-label="Close"><i class="ti ti-chevron-down"></i></button>
+    <span class="sheet-title">About</span>
+    <div style="width:38px"></div>
+  </div>
+  <div class="sheet-body">
+    <div class="about-hero">
+      <div class="about-logo"><img src="/static/icons/icon-192.png" alt="Naada"></div>
+      <div class="about-name">Naada · నాద</div>
+      <div class="about-tag">Primordial sound, reimagined</div>
+      <div class="about-ver" id="about-ver">Personal Edition</div>
+    </div>
+
+    <p class="about-lead">
+      An ad-free, 320 kbps Indian-music player that installs to your home screen
+      and runs from your own phone. No accounts, no tracking, no ads — built for
+      one listener, engineered like a small production system.
+    </p>
+
+    <div class="about-grid">
+      <div class="about-stat"><div class="about-stat-n">320</div><div class="about-stat-l">kbps audio</div></div>
+      <div class="about-stat"><div class="about-stat-n">4</div><div class="about-stat-l">languages</div></div>
+      <div class="about-stat"><div class="about-stat-n">0</div><div class="about-stat-l">ads · trackers</div></div>
+    </div>
+
+    <div class="about-block">
+      <div class="about-block-h"><i class="ti ti-sparkles"></i> What makes it special</div>
+      <ul class="about-list">
+        <li>Audio streams <b>directly</b> from the CDN — your phone server only handles metadata.</li>
+        <li>Synced, line-by-line lyrics that scroll with the song.</li>
+        <li>AI story cards &amp; trivia about the films and composers you listen to.</li>
+        <li>Full library, playlists &amp; queue editing — all stored privately on-device.</li>
+        <li>Lock-screen controls &amp; album art via the Media Session API.</li>
+        <li>Installable PWA with offline app shell and instant updates.</li>
+      </ul>
+    </div>
+
+    <div class="about-block">
+      <div class="about-block-h"><i class="ti ti-shield-lock"></i> Privacy by design</div>
+      <p class="about-p">No sign-in, no analytics, no third-party tracking. Your
+      liked songs, playlists and history never leave this phone. AI features are
+      optional and use a key kept off the browser entirely.</p>
+    </div>
+
+    <div class="about-block">
+      <div class="about-block-h"><i class="ti ti-cpu"></i> Under the hood</div>
+      <p class="about-p">Vanilla JS PWA + a lightweight Flask service on Termux.
+      DES-ECB stream decryption, multi-source lyrics, Gemini Flash AI with model
+      fallback, rotating logs, and graceful degradation throughout.</p>
+    </div>
+
+    <!-- Your data: backup & restore -->
+    <div class="about-block">
+      <div class="about-block-h"><i class="ti ti-database-heart"></i> Your data</div>
+      <p class="about-p">Your library, playlists, liked songs and settings live on
+      this device. Back them up to a file so they're safe across updates,
+      reinstalls, or a new phone.</p>
+      <div class="data-actions">
+        <button class="data-btn data-btn-primary" id="backup-btn"><i class="ti ti-download"></i> Back up my data</button>
+        <button class="data-btn" id="restore-btn"><i class="ti ti-upload"></i> Restore from file</button>
+        <input type="file" id="restore-input" accept="application/json,.json" style="display:none">
+      </div>
+    </div>
+
+    <!-- Updates -->
+    <div class="about-block">
+      <div class="about-block-h"><i class="ti ti-refresh"></i> Updates</div>
+      <p class="about-p">Get the latest version without losing any of your data.</p>
+      <div class="data-actions">
+        <button class="data-btn data-btn-primary" id="update-btn"><i class="ti ti-cloud-download"></i> Update now</button>
+      </div>
+      <p class="about-p" style="font-size:11px;color:var(--gray-400);margin-top:8px" id="app-build">Naada</p>
+    </div>
+
+    <div class="about-foot">
+      నాద · Made with care, for the love of music 🎵<br>
+      <span class="about-sign">crafted by <b>adabala</b></span>
+    </div>
+  </div>
+</div>
+
+<!-- ── Sleep timer modal ──────────────────────────────────────────────── -->
+<div class="modal-back" id="sleep-modal" role="dialog" aria-modal="true" aria-label="Sleep timer">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title">Sleep Timer</div>
+    <div class="modal-opts">
+      <div class="modal-opt" data-mins="15">Stop after 15 minutes</div>
+      <div class="modal-opt" data-mins="30">Stop after 30 minutes</div>
+      <div class="modal-opt" data-mins="45">Stop after 45 minutes</div>
+      <div class="modal-opt" data-mins="60">Stop after 1 hour</div>
+      <div class="modal-opt" data-mins="90">Stop after 1.5 hours</div>
+      <div class="modal-opt danger" data-mins="0">Cancel timer</div>
+    </div>
+    <button class="modal-cancel" id="sleep-dismiss">Dismiss</button>
+  </div>
+</div>
+
+<!-- ── Create playlist modal ──────────────────────────────────────────── -->
+<div class="modal-back" id="create-pl-modal" role="dialog" aria-modal="true" aria-label="Create playlist">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <div class="modal-title" id="create-pl-title">New Playlist</div>
+    <input class="modal-input" id="pl-name-input" type="text" placeholder="Playlist name…" maxlength="60">
+    <button class="modal-primary" id="pl-create-confirm">Create Playlist</button>
+    <button class="modal-cancel" id="pl-create-cancel">Cancel</button>
+  </div>
+</div>
+
+<!-- ── Toast ──────────────────────────────────────────────────────────── -->
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="/static/app.js?v=22"></script>
+</body>
+</html>
