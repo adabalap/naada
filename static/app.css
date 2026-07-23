@@ -1598,6 +1598,26 @@ html[data-theme="dark"] .lib-hero { filter: saturate(1.05); }
 .check-list li i { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
 .check-list li.ok i { color: var(--teal); }
 .check-list li.no i { color: var(--rose); }
+.check-list li.warn { font-weight: 600; }
+.check-list li.warn i { color: #B45309; }
+
+/* The concrete fix, called out so it can't be missed */
+.fix-box {
+  margin-top: 12px; padding: 12px;
+  background: var(--white); border: 1.5px solid var(--purple);
+  border-radius: 12px;
+}
+.fix-h {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 13px; font-weight: 700; color: var(--purple); margin-bottom: 6px;
+}
+.fix-code {
+  background: var(--gray-100); border-radius: 8px;
+  padding: 10px 12px; margin: 8px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.6; color: var(--black);
+  white-space: pre-wrap; word-break: break-word;
+}
 
 /* The ⋮ on every song row — deleting shouldn't need a hidden gesture */
 .t-menu {

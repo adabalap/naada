@@ -1,8 +1,8 @@
-Naada v26 — install / upgrade
+Naada v27 — install / upgrade
 =============================
 
-Frontend only this release. app.py, naada.sh and the deploy files are
-unchanged from your repo.
+This release changes static/ (frontend + icons + manifest) and adds a
+"start-http" command to naada.sh. app.py is unchanged.
 
 
 UPGRADE
@@ -14,9 +14,9 @@ UPGRADE
   ./naada.sh stop
 
   # unzip this archive so its naada/ folder replaces ~/naada
-  # (or just copy static/ over — that's all that changed)
+  # (static/ and naada.sh both changed this time)
 
-  ./naada.sh start
+  ./naada.sh start-http      # <- see the next section for why
 
 Two files worth keeping from your existing install:
 
@@ -29,42 +29,49 @@ and survives the upgrade. For extra safety use
 Home -> gear -> About Naada -> "Back up my data" first.
 
 
-IMPORTANT: INSTALL TO YOUR HOME SCREEN
---------------------------------------
+IMPORTANT: RUN IN HTTP MODE SO IT CAN BE INSTALLED
+--------------------------------------------------
 
-Open About Naada first. It now runs four live checks and tells you exactly
-which one is failing, and shows an "Install Naada" button when Chrome
-considers the app installable.
+If you are opening Naada at https://localhost:5443 and clicking past a
+certificate warning, Chrome will NEVER let you install it. A clicked-through
+self-signed certificate leaves the origin flagged with a certificate error,
+and Chrome refuses to install apps from such an origin.
 
-If you are opening Naada as a Chrome tab, two things will be wrong no
-matter what the code does:
+Plain http://localhost, by contrast, is on Chrome's trusted-origins list and
+needs no certificate at all. So HTTP is MORE installable than your HTTPS.
 
-  * Music stops when you minimise. Android freezes background browser
-    tabs far more aggressively than installed apps.
-  * The media notification shows Chrome's icon, not Naada's. A web page
-    cannot override that badge; only an installed app can.
+  ./naada.sh stop
+  ./naada.sh start-http
 
-Fix:  Chrome menu (three dots) -> Add to Home Screen
-      Then always open Naada from that new icon.
+Then open  http://localhost:5000  on the phone, and use the "Install Naada"
+button in About Naada (or Chrome menu -> Add to Home Screen).
 
-To check which mode you are in, open About Naada. It now tells you
-directly: green "Installed as an app", or amber "Running in a browser tab".
+Installing is what fixes BOTH of these:
+  * Music keeps playing when you minimise the app.
+  * The media notification shows the Naada icon, not Chrome's.
 
-Samsung phones: also check Settings -> Battery -> Background usage limits,
-and make sure Naada is not listed under "Sleeping apps".
+start-http binds to 127.0.0.1 only. That is deliberate: http://<LAN-IP>:5000
+is NOT a trusted origin, only literal "localhost" is. To reach Naada from
+other devices, use the deploy/naada.adabala.com nginx config with your real
+CA-signed certificate -- that installs fine too.
+
+Open About Naada to check your status. It runs four live checks and tells
+you exactly which one is failing.
+
+Samsung: also check Settings -> Battery -> Background usage limits and make
+sure neither Chrome nor Termux is under "Sleeping apps".
 
 
 FRESH INSTALL
 -------------
 
   cd ~
-  unzip naada-v26.zip
+  unzip naada-v27.zip
   cd naada
   pip install flask requests cryptography flask-cors
-  ./naada.sh start
+  ./naada.sh start-http
 
-Chrome -> https://localhost:5443 -> accept the certificate ->
-menu -> Add to Home Screen.
+Chrome -> http://localhost:5000 -> About Naada -> Install Naada.
 
 Optional, for AI features (story cards, trivia, mood playlists):
 
@@ -87,7 +94,7 @@ worker version was bumped, so this normally sorts itself out.
 WHAT CHANGED
 ------------
 
-See RELEASE-v26.md. Headlines: folders for grouping albums with
+See RELEASE-v27.md. Headlines: folders for grouping albums with
 drag-to-file, the Chrome-icon and background-playback diagnosis, album
 card layout hardening, and a settings entry point in Library so the
 Light/Auto/Dark setting is actually reachable.

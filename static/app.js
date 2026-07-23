@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v26";
+const APP_VERSION = "v27";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -3075,7 +3075,7 @@ function renderInstallState() {
   const installed = typeof isInstalledPWA === "function" && isInstalledPWA();
 
   const checks = rows.map(r =>
-    `<li class="${r.ok ? "ok" : "no"}"><i class="ti ti-${r.ok ? "circle-check" : "circle-x"}"></i>${r.label}</li>`
+    `<li class="${r.warn ? "warn" : (r.ok ? "ok" : "no")}"><i class="ti ti-${r.warn ? "alert-triangle" : (r.ok ? "circle-check" : "circle-x")}"></i>${r.label}</li>`
   ).join("");
 
   if (installed) {
@@ -3087,25 +3087,33 @@ function renderInstallState() {
     return;
   }
 
+  const httpsLocal = location.protocol === "https:" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+
   box.className = "install-box warn";
   box.innerHTML = `<div class="install-h"><i class="ti ti-alert-triangle"></i> Running in a browser tab</div>
     <ul class="check-list">${checks}</ul>
     <p class="about-p">While Naada runs as a Chrome tab, two things stay broken
-    no matter what the app does:</p>
-    <ul class="about-list">
-      <li>Music stops when you minimise — Android freezes background browser
-      tabs far more aggressively than installed apps.</li>
-      <li>Your media notification shows Chrome's icon. A web page cannot
-      override that badge; only an installed app can.</li>
-    </ul>
+    no matter what the app does: music stops when you minimise, and the media
+    notification shows Chrome's icon instead of ours.</p>
     <button class="modal-primary" id="install-now" style="margin-top:10px${_installPrompt ? "" : ";display:none"}">
       <i class="ti ti-download"></i> Install Naada
     </button>
+    ${httpsLocal ? `
+    <div class="fix-box">
+      <div class="fix-h"><i class="ti ti-tool"></i> The fix — switch to plain HTTP</div>
+      <p class="about-p">Chrome refuses to install any app served over HTTPS with
+      a certificate you had to click past. But <b>http://localhost is trusted by
+      Chrome automatically</b>, no certificate needed. In Termux:</p>
+      <pre class="fix-code">./naada.sh stop
+NAADA_HTTP_ONLY=1 ./naada.sh start</pre>
+      <p class="about-p">Then open <b>http://localhost:5000</b> and the Install
+      button above should appear.</p>
+    </div>` : `
     <p class="about-p" style="margin-top:8px">If that button isn't showing,
-    Chrome hasn't judged the app installable — almost always the HTTPS
-    certificate. Use <b>Chrome ⋮ → Add to Home Screen</b>; if the result still
-    opens with a browser address bar, the certificate needs fixing (see
-    DEPLOY.md).</p>`;
+    Chrome hasn't judged the app installable. Use <b>Chrome ⋮ → Add to Home
+    Screen</b>; if the result still opens with a browser address bar, the
+    certificate is the blocker (see INSTALL.txt).</p>`}`;
 
   const btn = $("install-now");
   if (btn) btn.addEventListener("click", doInstall);
@@ -3280,11 +3288,14 @@ function installDiagnostics() {
   const secure = window.isSecureContext;
   const sw = !!navigator.serviceWorker?.controller;
   const installed = typeof isInstalledPWA === "function" && isInstalledPWA();
+  const isHttps = location.protocol === "https:";
+  const localHost = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+
   rows.push({ ok: installed, label: installed
       ? "Running as an installed app"
       : "Running in a browser tab" });
   rows.push({ ok: secure, label: secure
-      ? "Secure context (HTTPS or localhost)"
+      ? `Secure context (${location.protocol}//${location.hostname})`
       : "Not a secure context — install is blocked" });
   rows.push({ ok: sw, label: sw
       ? "Service worker active"
@@ -3292,5 +3303,16 @@ function installDiagnostics() {
   rows.push({ ok: !!_installPrompt || installed, label: (_installPrompt || installed)
       ? "Chrome reports the app as installable"
       : "Chrome has not offered an install prompt" });
+
+  // The specific trap: self-signed HTTPS on localhost. Chrome treats a
+  // clicked-through certificate warning as a certificate ERROR, which blocks
+  // installation outright — while plain http://localhost is on Chrome's
+  // trustworthy-origins list and needs no certificate at all.
+  if (isHttps && localHost && !installed && !_installPrompt) {
+    rows.push({ ok: false, warn: true, label:
+      "Self-signed HTTPS on localhost — this is almost certainly the blocker. "
+      + "Plain http://localhost is MORE installable than https:// with a "
+      + "certificate you had to click through." });
+  }
   return rows;
 }

@@ -108,13 +108,27 @@ cmd_fg() {
 
 case "${1:-start}" in
   start)   cmd_start ;;
+  # Plain HTTP on localhost. Counter-intuitive but correct: Chrome trusts
+  # http://localhost automatically and will offer to INSTALL the app, whereas
+  # https:// with a self-signed cert you clicked past is treated as having a
+  # certificate error and cannot be installed at all. Installing is what makes
+  # background playback and the Naada media-notification icon work.
+  start-http)
+    export NAADA_HTTP_ONLY=1
+    cmd_start
+    ;;
   stop)    cmd_stop ;;
   restart) cmd_restart ;;
   status)  cmd_status ;;
   logs)    cmd_logs ;;
   fg)      cmd_fg ;;
   *)
-    echo "Usage: ./naada.sh {start|stop|restart|status|logs|fg}"
+    echo "Usage: ./naada.sh {start|start-http|stop|restart|status|logs|fg}"
+    echo
+    echo "  start-http   Serve plain HTTP on http://localhost:5000."
+    echo "               Use this on the phone itself — Chrome will then offer"
+    echo "               to install Naada as a real app (proper icon, and music"
+    echo "               keeps playing when minimised)."
     exit 1
     ;;
 esac
