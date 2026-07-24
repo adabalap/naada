@@ -675,6 +675,278 @@ def _manual_release_notes(tag):
 
 # --------------------------------- history ----------------------------------
 
+# ------------------------------ fix & undo ----------------------------------
+
+def _is_pushed(ref):
+    """True if ref exists on any remote (i.e. others may have it)."""
+    if not has_remote():
+        return False
+    r = default_remote()
+    git("fetch", r, "--tags", check=False, mutating=True)
+    out = git_out("branch", "-r", "--contains", ref, default="")
+    if out:
+        return True
+    # tags: check if the tag exists on the remote
+    return bool(git_out("ls-remote", "--tags", r, ref, default=""))
+
+def fix_rename_branch():
+    head("Rename a branch")
+    branches = git_out("branch", "--format=%(refname:short)").splitlines()
+    cur = current_branch()
+    opts = [(b, f"{b}{'  (current)' if b == cur else ''}") for b in branches]
+    old = choose("Which branch is misnamed?", opts)
+    if not old:
+        return
+    new = ask("New name (e.g. feature/login-fix)")
+    if not new:
+        return
+    if not re.match(r"^[A-Za-z0-9._/-]+$", new) or new.endswith("/") \
+       or ".." in new or new.startswith("-"):
+        err("That's not a valid branch name."); return
+    if new in branches:
+        err(f"'{new}' already exists."); return
+    if not confirm(f"Rename '{old}' → '{new}'?", default_no=False):
+        return
+
+    pushed = has_remote() and bool(
+        git_out("ls-remote", "--heads", default_remote(), old, default=""))
+    git("branch", "-m", old, new, mutating=True)
+    ok(f"Local branch renamed: {old} → {new}")
+
+    if pushed:
+        warn(f"'{old}' also exists on {default_remote()}.")
+        info("If a Pull/Merge Request is open from the old name, renaming the "
+             "remote branch will usually CLOSE it. Check first.")
+        if confirm(f"Push '{new}' and delete remote '{old}'?"):
+            git("push", "-u", default_remote(), new, mutating=True)
+            git("push", default_remote(), "--delete", old, check=False,
+                mutating=True)
+            ok("Remote updated. Teammates should run: git fetch --prune")
+        else:
+            info(f"Later, run:  git push -u {default_remote()} {new}  && "
+                 f"git push {default_remote()} --delete {old}")
+    elif has_remote():
+        info(f"When ready: git push -u {default_remote()} {new}")
+
+def fix_rename_tag():
+    head("Rename / move a tag")
+    print("  Architect's note: tags are treated as IMMUTABLE by git tooling.")
+    print("  Renaming an unpushed tag is trivial; renaming a PUSHED tag can")
+    print("  break releases and confuse anyone who already fetched it.")
+    tags = git_out("tag", "--sort=-creatordate").splitlines()
+    if not tags:
+        info("No tags in this repo."); return
+    old = choose("Which tag?", [(t, t) for t in tags[:20]])
+    if not old:
+        return
+    new = ask("New tag name")
+    if not new or new in tags:
+        err("Empty or already-existing name."); return
+
+    target = git_out("rev-parse", f"{old}^{{commit}}")
+    msg = git_out("tag", "-l", "--format=%(contents)", old) or f"Release {new}"
+    pushed = _is_pushed(old)
+    if pushed:
+        warn(f"Tag '{old}' exists on the remote. If a GitHub/GitLab Release "
+             "points at it, that release will lose its tag.")
+        if not confirm("Understood — proceed with remote rename too?"):
+            return
+    git("tag", "-a", new, target, "-m", msg, mutating=True)
+    git("tag", "-d", old, mutating=True)
+    ok(f"Local: '{old}' → '{new}' (same commit {target[:7]}, message preserved)")
+    if pushed and has_remote():
+        r = default_remote()
+        git("push", r, new, mutating=True)
+        git("push", r, f":refs/tags/{old}", mutating=True)
+        ok(f"Remote updated on {r}.")
+        info("Anyone who fetched the old tag keeps it locally until they run: "
+             f"git tag -d {old}")
+    elif has_remote():
+        info(f"Push when ready: git push {default_remote()} {new}")
+
+def fix_amend_message():
+    head("Fix the last commit message")
+    if not has_commits():
+        info("No commits yet."); return
+    last = git_out("log", "-1", "--format=%h %s")
+    info(f"Last commit: {last}")
+    if _is_pushed("HEAD"):
+        warn("This commit is already on the remote. Amending rewrites history —")
+        warn("safe ONLY if this is your personal branch and no one pulled it.")
+        if not confirm("It's my personal branch, no one else uses it — amend?"):
+            info("Safer alternative: make a new commit, or note the correction "
+                 "in the PR description.")
+            return
+    new_msg = ask("New commit message")
+    if not new_msg:
+        return
+    git("commit", "--amend", "-m", new_msg, mutating=True)
+    ok("Message amended.")
+    if _is_pushed("HEAD~0") and has_remote():
+        info(f"Update remote with: git push --force-with-lease "
+             f"{default_remote()} {current_branch()}")
+        info("(--force-with-lease refuses to overwrite work you haven't seen; "
+             "never use plain --force.)")
+
+def fix_add_to_last():
+    head("Add forgotten files to the last commit")
+    if not has_commits():
+        info("No commits yet."); return
+    d = dirty_files()
+    if not d:
+        info("Working tree is clean — nothing to add."); return
+    if _is_pushed("HEAD"):
+        warn("Last commit is already pushed. Amending it rewrites history.")
+        if not confirm("Personal branch only — proceed?"):
+            info("Safer: just make a new commit via the check-in flow.")
+            return
+    for line in d:
+        print(f"    {line}")
+    if choose("Stage which?", [("all", "All of the above"),
+                               ("pick", "Pick file-by-file")]) == "pick":
+        for line in d:
+            p = line[3:].split(" -> ")[-1].strip('"')
+            if confirm(f"stage {p}?", default_no=False):
+                git("add", "--", p, mutating=True)
+    else:
+        git("add", "-A", mutating=True)
+    git("commit", "--amend", "--no-edit", mutating=True)
+    ok("Files folded into the last commit; message unchanged.")
+
+def fix_undo_last_commit():
+    head("Undo the last commit (keep the work)")
+    if not has_commits():
+        info("No commits yet."); return
+    last = git_out("log", "-1", "--format=%h %s")
+    info(f"This will remove commit «{last}» from history but leave all its")
+    info("changes in your working tree, ready to re-commit differently.")
+    if _is_pushed("HEAD"):
+        warn("That commit is already pushed — undoing it locally will make "
+             "your branch diverge from the remote.")
+        act = choose("Better options for a pushed commit:", [
+            ("revert", "git revert — new commit that cancels it (safe, recommended)"),
+            ("reset",  "Undo locally anyway (I will force-push my personal branch)"),
+        ])
+        if act == "revert":
+            r = git("revert", "--no-edit", "HEAD", check=False, mutating=True)
+            if r.returncode == 0:
+                ok("Revert commit created. Push normally.")
+            else:
+                err("Revert conflicted — resolve files then git revert --continue")
+            return
+        if act is None:
+            return
+    if not confirm(f"Soft-reset away «{last}»?"):
+        return
+    git("reset", "--soft", "HEAD~1", mutating=True)
+    ok("Commit undone; its changes are staged and waiting. Nothing lost.")
+
+def fix_unstage_or_discard():
+    head("Unstage / discard changes")
+    act = choose("What do you need?", [
+        ("unstage", "Unstage files (keep the edits, just pull them out of "
+                    "the next commit)"),
+        ("discard", "DISCARD local edits to tracked files (destructive — "
+                    "snapshot taken first)"),
+    ])
+    if act == "unstage":
+        staged = git_out("diff", "--cached", "--name-only").splitlines()
+        if not staged:
+            info("Nothing is staged."); return
+        which = choose("Unstage…", [("all", "everything"), ("pick", "pick files")])
+        if which == "pick":
+            for p in staged:
+                if confirm(f"unstage {p}?", default_no=False):
+                    git("restore", "--staged", "--", p, mutating=True)
+        elif which == "all":
+            git("restore", "--staged", ".", mutating=True)
+        ok("Done. Edits are still in your files.")
+    elif act == "discard":
+        d = [l for l in dirty_files() if not l.startswith("??")]
+        if not d:
+            info("No tracked-file changes to discard."); return
+        for line in d:
+            print(f"    {line}")
+        warn("Discarding cannot be undone by git — that's why a snapshot "
+             "comes first.")
+        if not confirm("Snapshot, then discard ALL the edits above?"):
+            return
+        snapshot_worktree(label="pre-discard")
+        git("restore", ".", mutating=True)
+        ok("Edits discarded. The snapshot in .gitpilot-backups/ has the old state.")
+
+def fix_reflog_rescue():
+    head("Recover a lost commit or deleted branch")
+    print("  git almost never deletes commits immediately — the reflog keeps")
+    print("  ~90 days of everywhere HEAD has been. Find your work below:")
+    print()
+    log = git_out("reflog", "--date=relative", "-20")
+    for line in log.splitlines():
+        print("   " + line)
+    print()
+    sha = ask("Paste the commit id to rescue (Enter to cancel)")
+    if not sha:
+        return
+    if not git_out("rev-parse", "--verify", "-q", f"{sha}^{{commit}}"):
+        err("Not a valid commit id."); return
+    name = ask("Name for the rescue branch", f"rescue/{sha[:7]}")
+    git("branch", name, sha, mutating=True)
+    ok(f"Branch '{name}' now points at {sha[:7]}. Your work is safe.")
+    info(f"Inspect with: git switch {name}")
+
+def fix_stash_manager():
+    head("Stash manager (parked work)")
+    st = git_out("stash", "list")
+    if not st:
+        info("No stashes."); return
+    entries = st.splitlines()
+    for e in entries:
+        print("   " + e)
+    idx = ask("Which stash number? (e.g. 0, Enter to cancel)")
+    if not idx.isdigit():
+        return
+    ref = f"stash@{{{idx}}}"
+    print()
+    print(git_out("stash", "show", "--stat", ref))
+    act = choose(f"What to do with {ref}?", [
+        ("pop",   "POP — apply it and remove from the stash list"),
+        ("apply", "APPLY — apply it but keep it in the list (safer)"),
+        ("branch","BRANCH — apply it onto a brand-new branch (zero conflict risk)"),
+        ("drop",  "DROP — delete it (snapshot of list shown above)"),
+    ])
+    if act in ("pop", "apply"):
+        r = git("stash", act, ref, check=False, mutating=True)
+        ok("Done.") if r.returncode == 0 else err(
+            "Conflicts while applying — resolve files; the stash is preserved.")
+    elif act == "branch":
+        nb = ask("New branch name", f"stash-work-{timestamp()}")
+        git("stash", "branch", nb, ref, mutating=True)
+        ok(f"Stash applied cleanly on new branch '{nb}'.")
+    elif act == "drop":
+        if confirm(f"Really delete {ref}?"):
+            git("stash", "drop", ref, mutating=True)
+            ok("Dropped.")
+
+def flow_fix():
+    while True:
+        head("🔧 Fix & Undo")
+        act = choose("What went wrong?", [
+            ("branch",  "I picked a wrong BRANCH name → rename it"),
+            ("tag",     "I picked a wrong TAG name → rename/move it"),
+            ("msg",     "Last COMMIT MESSAGE is wrong → amend it"),
+            ("addlast", "I FORGOT FILES in the last commit → fold them in"),
+            ("undo",    "UNDO the last commit but keep the work"),
+            ("stagefix","UNSTAGE or DISCARD local changes"),
+            ("reflog",  "I LOST a commit / deleted a branch → rescue via reflog"),
+            ("stash",   "Manage STASHED (parked) work"),
+            ("back",    "Back to main menu")])
+        if act in (None, "back"):
+            return
+        {"branch": fix_rename_branch, "tag": fix_rename_tag,
+         "msg": fix_amend_message, "addlast": fix_add_to_last,
+         "undo": fix_undo_last_commit, "stagefix": fix_unstage_or_discard,
+         "reflog": fix_reflog_rescue, "stash": fix_stash_manager}[act]()
+
 def flow_history():
     head("Recent history")
     print(git_out("log", "--oneline", "--graph", "--decorate", "-15"))
@@ -698,6 +970,7 @@ def menu():
             ("release", "🚀 Create a release (tag + GitHub release)"),
             ("backup",  "🧰 Backup now (worktree snapshot + full repo bundle)"),
             ("restore", "⏪ Restore a clean tag/version (with safety net)"),
+            ("fix",     "🔧 Fix & Undo (rename branch/tag, amend, recover…)"),
             ("history", "📜 Show history / tags / stashes"),
             ("quit",    "Exit")])
         if act in (None, "quit"):
@@ -706,7 +979,7 @@ def menu():
 
 FLOWS = {"doctor": doctor, "checkin": flow_checkin, "tag": flow_tag,
          "release": flow_release, "backup": flow_backup,
-         "restore": flow_restore, "history": flow_history}
+         "restore": flow_restore, "fix": flow_fix, "history": flow_history}
 
 def main():
     global DRY_RUN
