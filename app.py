@@ -87,12 +87,49 @@ if _HAS_CORS:
 # X-Forwarded-* headers so request.scheme/host reflect the real client request.
 # Harmless on Termux (no proxy sets these headers). Enabled when NAADA_HTTP_ONLY
 # is set, i.e. the dedicated-server deployment path.
-if os.environ.get("NAADA_HTTP_ONLY", "").lower() in ("1", "true", "yes"):
+if (os.environ.get("NAADA_HTTP_ONLY", "").lower() in ("1", "true", "yes")
+        or os.environ.get("NAADA_BEHIND_PROXY", "").lower() in ("1", "true", "yes")):
     try:
         from werkzeug.middleware.proxy_fix import ProxyFix
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
     except Exception as _e:
         pass
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Optional access gate.
+#
+# Behind Cloudflare this app is reachable by anyone who learns the URL, and
+# it spends your Gemini quota. Set NAADA_TOKEN to require a shared secret;
+# leave it unset and behaviour is exactly as before (open), so nothing
+# changes for a localhost-only install.
+#
+# Visit  https://your-domain/?k=YOUR_TOKEN  once and the cookie is stored.
+# ─────────────────────────────────────────────────────────────────────────
+NAADA_TOKEN = os.environ.get("NAADA_TOKEN", "").strip()
+_OPEN_PATHS = ("/sw.js", "/manifest.json", "/favicon.ico", "/static/icons/")
+
+
+@app.before_request
+def _require_token():
+    if not NAADA_TOKEN:
+        return None                       # gate disabled — original behaviour
+    p = request.path
+    if p.startswith(_OPEN_PATHS):
+        return None                       # icons/manifest stay public so the
+                                          # install prompt can still work
+    if request.cookies.get("naada_k") == NAADA_TOKEN:
+        return None
+    supplied = request.args.get("k", "")
+    if supplied and supplied == NAADA_TOKEN:
+        from flask import make_response, redirect
+        r = make_response(redirect(request.path or "/"))
+        r.set_cookie("naada_k", NAADA_TOKEN, max_age=365 * 24 * 3600,
+                     httponly=True, samesite="Lax",
+                     secure=request.headers.get("X-Forwarded-Proto") == "https")
+        return r
+    return jsonify({"error": "unauthorized"}), 401
+
 
 # ── JioSaavn session ───────────────────────────────────────────────────────
 SAAVN = "https://www.jiosaavn.com/api.php"
@@ -1039,6 +1076,39 @@ _start_time = time.time()
 def log_request():
     if not request.path.startswith("/static") and request.path != "/sw.js":
         log.debug(f"→ {request.method} {request.path} {dict(request.args)}")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Cache headers, written for life behind Cloudflare.
+#
+# Cloudflare caches .js/.css/.png at its edge by default. That's fine for
+# our versioned assets (app.js?v=30) because the query string is part of
+# the cache key — bump the version and the edge fetches fresh.
+#
+# What is NOT safe to leave implicit is the app shell. If Cloudflare (or
+# any intermediary) holds on to index.html or manifest.json, users get new
+# JavaScript stapled to an old page, or an old manifest that quietly breaks
+# installability. Both fail in confusing ways, so we say no-cache out loud.
+# ─────────────────────────────────────────────────────────────────────────
+@app.after_request
+def _cache_policy(resp):
+    p = request.path
+    if p == "/" or p.endswith((".html", "/manifest.json", "/sw.js")):
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+    elif p.startswith("/static/icons/"):
+        # Icons change only when we ship new ones, and they're referenced
+        # by fixed names, so let the edge hold them for a day.
+        # Direct assignment: Flask's static handler has already set no-cache,
+        # and setdefault would silently lose to it.
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+    elif p.startswith("/static/") and request.args.get("v"):
+        # Versioned asset: safe to cache hard, the URL changes on release.
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif p.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
+
 
 @app.after_request
 def log_response(resp):

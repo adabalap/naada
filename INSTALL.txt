@@ -1,10 +1,10 @@
-Naada v30 — install / upgrade
+Naada v33 — install / upgrade
 =============================
 
 This release changes static/ (frontend), and app.py gains the radio
 endpoints. naada.sh keeps the "start-http" command from v27.
 
-New in v30: PODCASTS (iTunes search + RSS, no API key), plus everything
+New in v33: PODCASTS (iTunes search + RSS, no API key), plus everything
 from v28 -- internet radio, resume-where-you-left-off, sleep timer, recent
 searches.
 
@@ -40,36 +40,46 @@ and survives the upgrade. For extra safety use
 Home -> gear -> About Naada -> "Back up my data" first.
 
 
-IMPORTANT: RUN IN HTTP MODE SO IT CAN BE INSTALLED
---------------------------------------------------
+RUNNING BEHIND CLOUDFLARE (recommended)
+---------------------------------------
 
-If you are opening Naada at https://localhost:5443 and clicking past a
-certificate warning, Chrome will NEVER let you install it. A clicked-through
-self-signed certificate leaves the origin flagged with a certificate error,
-and Chrome refuses to install apps from such an origin.
+Cloudflare gives you a real HTTPS certificate, which is what makes the PWA
+installable -- and installing is what fixes both the media-notification
+icon and background playback.
 
-Plain http://localhost, by contrast, is on Chrome's trusted-origins list and
-needs no certificate at all. So HTTP is MORE installable than your HTTPS.
+  ./naada.sh stop
+  ./naada.sh start-cloud
+
+start-cloud serves plain HTTP and trusts X-Forwarded-* headers. Do NOT let
+Flask also do TLS behind Cloudflare; two TLS layers only produces handshake
+errors.
+
+Then open your https:// domain and use About Naada -> "Install Naada".
+
+YOUR APP IS NOW PUBLIC. Anyone with the URL can use it and spend your
+Gemini quota. To lock it down:
+
+  export NAADA_TOKEN=pick-something-long
+  ./naada.sh restart
+
+Then visit  https://your-domain/?k=pick-something-long  once. A cookie is
+stored for a year. Leave NAADA_TOKEN unset to keep it open.
+
+
+RUNNING ON THE PHONE ONLY (no Cloudflare)
+-----------------------------------------
 
   ./naada.sh stop
   ./naada.sh start-http
 
-Then open  http://localhost:5000  on the phone, and use the "Install Naada"
-button in About Naada (or Chrome menu -> Add to Home Screen).
+Then open http://localhost:5000. Plain http://localhost is trusted by
+Chrome automatically, so it installs -- whereas https:// with a self-signed
+certificate you clicked past can never be installed.
 
-Installing is what fixes BOTH of these:
-  * Music keeps playing when you minimise the app.
-  * The media notification shows the Naada icon, not Chrome's.
+Open About Naada to check status: it runs four live checks and names the
+failing one.
 
-start-http binds to 127.0.0.1 only. That is deliberate: http://<LAN-IP>:5000
-is NOT a trusted origin, only literal "localhost" is. To reach Naada from
-other devices, use the deploy/naada.adabala.com nginx config with your real
-CA-signed certificate -- that installs fine too.
-
-Open About Naada to check your status. It runs four live checks and tells
-you exactly which one is failing.
-
-Samsung: also check Settings -> Battery -> Background usage limits and make
+Samsung: check Settings -> Battery -> Background usage limits, and make
 sure neither Chrome nor Termux is under "Sleeping apps".
 
 
@@ -77,7 +87,7 @@ FRESH INSTALL
 -------------
 
   cd ~
-  unzip naada-v30.zip
+  unzip naada-v33.zip
   cd naada
   pip install flask requests cryptography flask-cors
   ./naada.sh start-http
@@ -105,7 +115,7 @@ worker version was bumped, so this normally sorts itself out.
 WHAT CHANGED
 ------------
 
-See RELEASE-v30.md. Headlines: folders for grouping albums with
+See RELEASE-v33.md. Headlines: folders for grouping albums with
 drag-to-file, the Chrome-icon and background-playback diagnosis, album
 card layout hardening, and a settings entry point in Library so the
 Light/Auto/Dark setting is actually reachable.

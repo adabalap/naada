@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v30";
+const APP_VERSION = "v33";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -3319,10 +3319,14 @@ function installDiagnostics() {
       ? "Chrome reports the app as installable"
       : "Chrome has not offered an install prompt" });
 
-  // The specific trap: self-signed HTTPS on localhost. Chrome treats a
-  // clicked-through certificate warning as a certificate ERROR, which blocks
-  // installation outright — while plain http://localhost is on Chrome's
-  // trustworthy-origins list and needs no certificate at all.
+  // Two very different reasons an install prompt might be missing.
+  const proxiedHttps = isHttps && !localHost;
+  if (proxiedHttps && !installed && !_installPrompt) {
+    rows.push({ ok: false, warn: true, label:
+      "Real HTTPS certificate, so the origin is fine — if there's still no "
+      + "install prompt, Chrome may already consider it installed, or the "
+      + "service worker hasn't taken control yet. Reload once and re-check." });
+  }
   if (isHttps && localHost && !installed && !_installPrompt) {
     rows.push({ ok: false, warn: true, label:
       "Self-signed HTTPS on localhost — this is almost certainly the blocker. "

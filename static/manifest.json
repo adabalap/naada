@@ -1,16 +1,22 @@
 {
-  "name": "Naada · నాద",
+  "name": "Naada \u00b7 \u0c28\u0c3e\u0c26",
   "short_name": "Naada",
-  "description": "Your personal Indian music player — ad-free, 320kbps",
+  "description": "Your personal Indian music player \u2014 ad-free, 320kbps",
   "start_url": "/",
   "scope": "/",
   "id": "/",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui"],
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
   "background_color": "#FAFAF8",
   "theme_color": "#4A1A6B",
   "orientation": "portrait-primary",
-  "categories": ["music", "entertainment"],
+  "categories": [
+    "music",
+    "entertainment"
+  ],
   "icons": [
     {
       "src": "/static/icons/icon-192.png",
@@ -38,8 +44,16 @@
     }
   ],
   "shortcuts": [
-    { "name": "Search", "url": "/?tab=search", "description": "Search for songs" },
-    { "name": "Liked Songs", "url": "/?tab=library", "description": "My liked songs" }
+    {
+      "name": "Search",
+      "url": "/?tab=search",
+      "description": "Search for songs"
+    },
+    {
+      "name": "Liked Songs",
+      "url": "/?tab=library",
+      "description": "My liked songs"
+    }
   ],
   "prefer_related_applications": false
 }

@@ -117,13 +117,28 @@ case "${1:-start}" in
     export NAADA_HTTP_ONLY=1
     cmd_start
     ;;
+  # Behind Cloudflare (tunnel or proxy). Cloudflare terminates TLS with a
+  # real certificate, so this app must serve plain HTTP and must NOT try to
+  # do its own TLS -- two TLS layers is how you get handshake errors.
+  # ProxyFix is enabled so X-Forwarded-Proto/For are trusted.
+  # Set NAADA_TOKEN first if you don't want the whole internet using it.
+  start-cloud)
+    export NAADA_HTTP_ONLY=1
+    export NAADA_BEHIND_PROXY=1
+    cmd_start
+    ;;
   stop)    cmd_stop ;;
   restart) cmd_restart ;;
   status)  cmd_status ;;
   logs)    cmd_logs ;;
   fg)      cmd_fg ;;
   *)
-    echo "Usage: ./naada.sh {start|start-http|stop|restart|status|logs|fg}"
+    echo "Usage: ./naada.sh {start|start-http|start-cloud|stop|restart|status|logs|fg}"
+    echo
+    echo "  start-cloud  For Cloudflare. Plain HTTP + trusts X-Forwarded-*."
+    echo "               Cloudflare provides the real certificate, so the"
+    echo "               PWA installs properly and the icon/background"
+    echo "               playback both work."
     echo
     echo "  start-http   Serve plain HTTP on http://localhost:5000."
     echo "               Use this on the phone itself — Chrome will then offer"
