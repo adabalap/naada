@@ -1,8 +1,19 @@
-Naada v27 — install / upgrade
+Naada v30 — install / upgrade
 =============================
 
-This release changes static/ (frontend + icons + manifest) and adds a
-"start-http" command to naada.sh. app.py is unchanged.
+This release changes static/ (frontend), and app.py gains the radio
+endpoints. naada.sh keeps the "start-http" command from v27.
+
+New in v30: PODCASTS (iTunes search + RSS, no API key), plus everything
+from v28 -- internet radio, resume-where-you-left-off, sleep timer, recent
+searches.
+
+No new Python dependencies. The podcast feed parser uses the standard
+library (xml.etree), and the proxies use "requests", which you already
+have. Nothing to pip install.
+
+Note: Trivia moved out of the bottom nav to make room for Podcasts. It is
+now a row at the top of Library. Nothing was removed.
 
 
 UPGRADE
@@ -66,7 +77,7 @@ FRESH INSTALL
 -------------
 
   cd ~
-  unzip naada-v27.zip
+  unzip naada-v30.zip
   cd naada
   pip install flask requests cryptography flask-cors
   ./naada.sh start-http
@@ -94,7 +105,7 @@ worker version was bumped, so this normally sorts itself out.
 WHAT CHANGED
 ------------
 
-See RELEASE-v27.md. Headlines: folders for grouping albums with
+See RELEASE-v30.md. Headlines: folders for grouping albums with
 drag-to-file, the Chrome-icon and background-playback diagnosis, album
 card layout hardening, and a settings entry point in Library so the
 Light/Auto/Dark setting is actually reachable.

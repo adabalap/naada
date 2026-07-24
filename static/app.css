@@ -7,6 +7,10 @@
 :root {
   /* Brand */
   --purple:    #4A1A6B;
+  /* Solid brand fill, used where white text sits ON the colour. Kept
+     separate from --purple (text ink) so dark mode can lighten the ink
+     for contrast without washing out fills or the brand gradient. */
+  --purple-fill: #4A1A6B;
   --purple-lt: #7B3FA0;
   --purple-bg: #F3EDF8;
   --teal:      #0891B2;
@@ -26,7 +30,7 @@
   --gray-800:  #2E2C28;
   --black:     #1A1917;
   /* Gradients */
-  --grad-brand: linear-gradient(135deg, var(--purple) 0%, var(--rose) 60%, var(--gold) 100%);
+  --grad-brand: linear-gradient(135deg, var(--purple-fill) 0%, #E11D75 60%, #F59E0B 100%);
   --grad-teal:  linear-gradient(135deg, var(--teal) 0%, #06B6D4 100%);
   /* Spacing */
   --nav-h:     62px;
@@ -286,7 +290,7 @@ html, body {
   background: var(--white); transition: all .15s;
 }
 .s-chip.active {
-  background: var(--purple); color: #fff; border-color: var(--purple);
+  background: var(--purple-fill); color: #fff; border-color: var(--purple-fill);
 }
 
 /* ── State messages ────────────────────────────────────────────────────── */
@@ -888,7 +892,7 @@ body::before {
   border: none; border-radius: 18px; padding: 7px 16px;
   font-size: 12px; font-weight: 600; cursor: pointer;
 }
-.trivia-reveal:active { background: var(--purple); color: #fff; }
+.trivia-reveal:active { background: var(--purple-fill); color: #fff; }
 .trivia-song {
   margin-top: 10px; font-size: 11px; color: var(--gray-400);
   display: flex; align-items: center; gap: 4px;
@@ -1032,7 +1036,7 @@ body::before {
   font-size: 13px; font-weight: 700; margin-right: 8px;
   vertical-align: middle;
 }
-.lang-opt.active .lang-opt-glyph { background: var(--purple); color: #fff; }
+.lang-opt.active .lang-opt-glyph { background: var(--purple-fill); color: #fff; }
 
 /* Popover — anchored top-right under the header pill */
 .lang-pop {
@@ -1268,6 +1272,19 @@ button:focus-visible, .icon-btn:focus-visible, input:focus-visible,
    html[data-theme="dark"|"light"] before first paint, and live-updates it
    when the OS scheme flips while on "auto". */
 html[data-theme="dark"] {
+    /* Solid accents, re-tuned for a dark canvas. The previous build themed
+       only the tint backgrounds and left these at their light-mode values,
+       so --purple (#4A1A6B) was rendering at 1.37:1 against a card — the
+       playing track's title came out DIMMER than the rows around it, which
+       is exactly backwards. These all clear WCAG AA on the lightest dark
+       surface; measured, not eyeballed. */
+    --purple:    #C9A7F0;   /* text ink, 8.5:1 on cards      */
+    --purple-fill: #6D3391; /* solid fill, white text 8.3:1  */
+    --purple-lt: #DCC6FA;   /* 11.2:1 */
+    --teal:      #22D3EE;   /* 9.6:1  */
+    --gold:      #FBBF24;   /* 10.4:1 */
+    --rose:      #FF6BA6;   /* 6.6:1  */
+
     --purple-bg: rgba(123,63,160,.22);
     --teal-bg:   rgba(34,211,238,.16);
     --gold-bg:   rgba(245,158,11,.18);
@@ -1412,7 +1429,7 @@ html[data-theme="dark"] .lib-hero { filter: saturate(1.05); }
   color: transparent; font-size: 14px; transition: all .12s;
 }
 .track.selected .sel-box {
-  background: var(--purple); border-color: var(--purple); color: #fff;
+  background: var(--purple-fill); border-color: var(--purple-fill); color: #fff;
 }
 .track.selected { background: var(--purple-bg); }
 
@@ -1639,3 +1656,194 @@ html[data-theme="dark"] .lib-hero { filter: saturate(1.05); }
 @media (hover: hover) and (pointer: fine) {
   .t-menu:hover { color: var(--purple); background: var(--gray-100); }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   v28 — resume, recent searches, radio, sleep timer
+═══════════════════════════════════════════════════════════════ */
+
+/* Resume strip: the fastest possible path back into your listening */
+.resume-strip {
+  display: flex; align-items: center; gap: 10px; width: calc(100% - 36px);
+  margin: 12px 18px 4px; padding: 12px 14px;
+  background: var(--purple-bg); border: 1px solid var(--gray-100);
+  border-radius: var(--r-sm); cursor: pointer; text-align: left;
+  color: var(--purple); font-size: 13px; font-weight: 600;
+}
+.resume-strip i:first-child { font-size: 18px; }
+.resume-strip span { flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.resume-strip:active { transform: scale(.99); }
+
+/* Recent searches */
+.recent-box { padding: 0 18px 8px; }
+.recent-h {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; font-weight: 700; color: var(--gray-400);
+  text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px;
+}
+.recent-clear {
+  border: none; background: none; color: var(--purple);
+  font-size: 11px; font-weight: 700; cursor: pointer; padding: 2px 4px;
+}
+.recent-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.recent-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--gray-200); background: var(--white);
+  border-radius: 16px; padding: 6px 11px;
+  font-size: 12px; color: var(--gray-800); cursor: pointer;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.recent-chip i { font-size: 13px; color: var(--gray-400); }
+.recent-chip:active { background: var(--purple-bg); border-color: var(--purple); }
+
+/* Radio rows */
+.live-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--rose);
+  box-shadow: 0 0 0 3px var(--rose-bg); flex-shrink: 0;
+  animation: livePulse 1.8s ease-in-out infinite;
+}
+@keyframes livePulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.radio-row .t-img { font-size: 18px; }
+
+/* Live radio has no timeline or track list — hide the controls that
+   would otherwise lie about what's possible. */
+body.radio-mode .seek-bar,
+body.radio-mode .now-times,
+body.radio-mode #ctrl-prev,
+body.radio-mode #ctrl-next,
+body.radio-mode #mini-next { visibility: hidden; pointer-events: none; }
+
+/* Sleep timer */
+.sleep-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--purple-bg); color: var(--purple);
+  border-radius: 12px; padding: 3px 8px;
+  font-size: 11px; font-weight: 700; flex-shrink: 0;
+}
+.sleep-chip i { font-size: 13px; }
+
+/* ═══════════════════════════════════════════════════════════════
+   v29 — podcasts
+═══════════════════════════════════════════════════════════════ */
+
+.pod-hero { padding: 20px 18px 12px; }
+.pod-hero-title {
+  font-family: var(--font-display); font-size: 26px; font-weight: 700;
+  color: var(--black); letter-spacing: -.3px;
+}
+.pod-hero-sub { font-size: 12.5px; color: var(--gray-400); margin-top: 3px; }
+.pod-search { padding-bottom: 8px; }
+
+/* Show rows in search results */
+.pod-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 18px; cursor: pointer;
+}
+.pod-row:active { background: var(--gray-50); }
+.pod-art {
+  width: 58px; height: 58px; border-radius: 10px; flex-shrink: 0;
+  background: var(--gray-100); overflow: hidden;
+  display: flex; align-items: center; justify-content: center; font-size: 22px;
+}
+.pod-art img { width: 100%; height: 100%; object-fit: cover; }
+.pod-meta { min-width: 0; flex: 1; }
+.pod-name {
+  font-size: 14px; font-weight: 700; color: var(--black);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pod-by { font-size: 12px; color: var(--gray-600); margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pod-tag { font-size: 11px; color: var(--gray-400); margin-top: 2px; }
+
+/* Show sheet header */
+.pod-show-head { display: flex; gap: 14px; padding: 4px 4px 16px; }
+.pod-head-art {
+  width: 88px; height: 88px; border-radius: 12px; flex-shrink: 0;
+  background: var(--gray-100); overflow: hidden;
+  display: flex; align-items: center; justify-content: center; font-size: 30px;
+  box-shadow: var(--shadow-md);
+}
+.pod-head-art img { width: 100%; height: 100%; object-fit: cover; }
+.pod-head-meta { min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+.pod-head-title {
+  font-family: var(--font-display); font-size: 17px; font-weight: 700;
+  color: var(--black); line-height: 1.3;
+}
+.pod-head-by { font-size: 12.5px; color: var(--gray-400); margin-top: 3px; }
+#pod-follow.following { color: var(--purple); background: var(--purple-bg); }
+
+/* Episode rows — long titles wrap to two lines, unlike song rows.
+   A podcast title is information, not a label. */
+.ep-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 12px 4px; border-bottom: 1px solid var(--gray-100); cursor: pointer;
+}
+.ep-row:active { background: var(--gray-50); }
+.ep-row.done .ep-title { color: var(--gray-400); font-weight: 500; }
+.ep-main { flex: 1; min-width: 0; }
+.ep-title {
+  font-size: 13.5px; font-weight: 600; color: var(--black); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ep-title i { color: var(--teal); font-size: 14px; }
+.ep-sub { font-size: 11.5px; color: var(--gray-400); margin-top: 3px; }
+.ep-bar {
+  height: 3px; background: var(--gray-100); border-radius: 2px;
+  margin-top: 6px; overflow: hidden;
+}
+.ep-bar span { display: block; height: 100%; background: var(--grad-brand); }
+.ep-play {
+  border: none; background: var(--gray-100); color: var(--purple);
+  width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; cursor: pointer;
+}
+.ep-play:active { background: var(--purple-fill); color: #fff; }
+
+/* Library entry point for anything that isn't a shelf */
+.lib-link {
+  display: flex; align-items: center; gap: 12px; width: calc(100% - 36px);
+  margin: 4px 18px 16px; padding: 12px 14px;
+  background: var(--gray-50); border: 1px solid var(--gray-100);
+  border-radius: var(--r-sm); cursor: pointer; text-align: left;
+  color: var(--gray-400);
+}
+.lib-link:active { background: var(--purple-bg); }
+.lib-link-ico {
+  width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
+  background: var(--gold-bg); color: var(--gold);
+  display: flex; align-items: center; justify-content: center; font-size: 17px;
+}
+.lib-link-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lib-link-t { font-size: 13.5px; font-weight: 700; color: var(--black); }
+.lib-link-s { font-size: 11.5px; color: var(--gray-400); margin-top: 1px; }
+
+/* Speed control only means something for spoken word */
+#speed-btn { font-size: 12px; font-weight: 800; letter-spacing: -.2px; }
+body:not(.podcast-mode) #speed-btn { display: none; }
+
+/* Podcasts: shuffle and repeat are meaningless on a 90-minute interview */
+body.podcast-mode #ctrl-shuffle,
+body.podcast-mode #ctrl-repeat { visibility: hidden; pointer-events: none; }
+body.podcast-mode #ctrl-prev i::before { content: "\ea3d"; }   /* rewind */
+body.podcast-mode #ctrl-next i::before { content: "\ea3c"; }   /* forward */
+
+/* ═══════════════════════════════════════════════════════════════
+   v29 — stacking order, stated once so it stops drifting
+
+   The full player is the topmost *surface* in any music app: opening it
+   should cover whatever sheet you came from. Previously .now-screen sat
+   at 450, below .sheet at 500 — so playing an episode from a show sheet
+   and then tapping the mini-player showed you the sheet again, with the
+   player stranded underneath.
+
+   pages 1 · mini-player 400 · sheets 500 · NOW-SCREEN 600
+   · action menus 800 · pickers 820 · text modals 840 · toast 900
+═══════════════════════════════════════════════════════════════ */
+.now-screen  { z-index: 600; }
+.modal-back  { z-index: 800; }
+#add-pl-sheet, #folder-pick-sheet { z-index: 820; }
+#create-pl-modal, #folder-name-modal { z-index: 840; }
+.bulk-bar    { z-index: 700; }
+.toast       { z-index: 900; }

@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v27";
+const APP_VERSION = "v30";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -84,7 +84,14 @@ const $$ = sel => document.querySelectorAll(sel);
 /* ── Utility ────────────────────────────────────────────────────────────── */
 function fmt(s) {
   if (!s || isNaN(s)) return "--:--";
-  return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
+  s = Math.floor(s);
+  const two = n => String(n).padStart(2, "0");
+  // Podcasts routinely run past an hour. Without this a 1h52m episode
+  // rendered as "112:10", which reads as nonsense.
+  if (s >= 3600) {
+    return `${Math.floor(s/3600)}:${two(Math.floor(s%3600/60))}:${two(s%60)}`;
+  }
+  return `${Math.floor(s/60)}:${two(s%60)}`;
 }
 function esc(s) {
   return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -123,6 +130,7 @@ function goto(page) {
   if (page === "library") renderLibrary();
   if (page === "queue")   renderQueueEditable();
   if (page === "trivia")  loadTrivia();
+  if (page === "podcasts" && typeof renderPodSubs === "function") renderPodSubs();
   // The language pill only applies to Home content — hide it elsewhere
   const pill = $("lang-pill");
   if (pill) pill.style.display = page === "home" ? "" : "none";
@@ -1326,7 +1334,12 @@ function applyShelfVisibility() {
     const el = $("shelf-" + def.id);
     if (!el) continue;
     let show = S.homeCfg.shelves.includes(def.id);
-    if (def.id === "pinned" && !S.pinned.length) show = false;  // hide when empty
+    // Personal shelves with nothing in them are just a header over dead
+    // space — hide them until they have something to say.
+    if (def.id === "pinned"    && !S.pinned.length)    show = false;
+    if (def.id === "liked"     && !S.liked.length)     show = false;
+    if (def.id === "playlists" && !S.playlists.length) show = false;
+    if (def.id === "recents"   && !S.history.length)   show = false;
     el.style.display = show ? "" : "none";
   }
   // 2) Order: personal shelves first (most-recently-touched on top),
@@ -1915,6 +1928,8 @@ const BACKUP_KEYS = [
   "nd_shuffle", "nd_repeat", "nd_ai_anecdote",
   "nd_shelf_touch", "nd_collapsed",
   "nd_pinned", "nd_theme", "nd_folders",
+  "nd_pod_subs", "nd_ep_progress", "nd_speed", "nd_playcounts",
+  "nd_recent_searches", "nd_resume",
 ];
 
 function exportData() {
@@ -3316,3 +3331,566 @@ function installDiagnostics() {
   }
   return rows;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   v28: productivity — resume, recent searches, play counts, sleep timer
+═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Resume where you left off ───────────────────────────────────────
+   A daily-driver player that forgets what you were listening to makes you
+   do navigation work every single launch. We remember the track, the
+   queue and the position, then restore it paused — never auto-playing,
+   because audio starting by itself when you open an app is hostile. */
+const RESUME_KEY = "nd_resume";
+
+function saveResume() {
+  if (!S.track) return;
+  const at = Math.floor(audio.currentTime || 0);
+  // A zero position must never overwrite a real one for the same track.
+  // Real scenario this fixes: you open the app, resume restores you at
+  // 1:37 but paused, you don't press play, you close the app — pagehide
+  // then wrote at:0 and your place was silently lost.
+  if (at < 1) {
+    const prev = LS.get(RESUME_KEY, null);
+    if (prev?.track?.id === S.track.id && prev.at > 1) return;
+  }
+  try {
+    LS.set(RESUME_KEY, {
+      track: S.track,
+      queue: (S.queue || []).slice(0, 60),
+      idx: S.queueIdx,
+      at,
+      saved: Date.now(),
+    });
+  } catch {}
+}
+
+// Save on the events that matter, cheaply — not on every timeupdate
+let _resumeTick = 0;
+audio.addEventListener("timeupdate", () => {
+  const now = Date.now();
+  if (now - _resumeTick < 5000) return;   // at most once every 5s
+  _resumeTick = now;
+  saveResume();
+});
+audio.addEventListener("pause", saveResume);
+window.addEventListener("pagehide", saveResume);
+document.addEventListener("visibilitychange", () => { if (document.hidden) saveResume(); });
+
+function restoreResume() {
+  let r;
+  try { r = LS.get(RESUME_KEY, null); } catch { return; }
+  if (!r?.track) return;
+  // Anything older than a week is stale — you've moved on
+  if (r.saved && Date.now() - r.saved > 7 * 24 * 3600 * 1000) return;
+
+  S.track    = r.track;
+  S.queue    = Array.isArray(r.queue) && r.queue.length ? r.queue : [r.track];
+  S.queueIdx = typeof r.idx === "number" ? r.idx : 0;
+  S.resumeAt = r.at || 0;
+
+  // Show the mini-player in a paused, ready state. Nothing loads or plays
+  // until the user asks — no surprise audio, no wasted mobile data.
+  updateMeta(r.track);
+  const mini = $("mini-player");
+  if (mini) mini.classList.add("active");
+  setPlayIcons(false);
+  S.playing = false;
+
+  const st = $("resume-strip");
+  if (st && r.at > 15) {
+    st.style.display = "flex";
+    $("resume-label").textContent = `Resume "${r.track.title}" at ${fmt(r.at)}`;
+    st.onclick = () => {
+      st.style.display = "none";
+      play(S.track, S.queue, S.queueIdx);
+    };
+  }
+}
+
+// After play() attaches a source, jump to the remembered position once
+audio.addEventListener("loadedmetadata", () => {
+  if (S.resumeAt && S.track) {
+    const at = S.resumeAt;
+    S.resumeAt = 0;
+    if (at > 5 && at < (audio.duration || 0) - 5) {
+      try { audio.currentTime = at; } catch {}
+    }
+  }
+});
+
+/* ── Play counts → a "Most played" shelf that reflects you ───────────
+   Generic recommendations are guesses. Your own play history isn't. */
+S.playCounts = LS.get("nd_playcounts", {});
+
+function bumpPlayCount(t) {
+  if (!t?.id) return;
+  const e = S.playCounts[t.id] || { n: 0, t };
+  e.n += 1; e.t = { id:t.id, title:t.title, artist:t.artist, image:t.image, duration:t.duration };
+  e.last = Date.now();
+  S.playCounts[t.id] = e;
+  LS.set("nd_playcounts", S.playCounts);
+}
+
+function mostPlayed(limit = 12) {
+  return Object.values(S.playCounts)
+    .filter(e => e.n >= 2)              // one listen isn't a favourite
+    .sort((a,b) => b.n - a.n || b.last - a.last)
+    .slice(0, limit)
+    .map(e => e.t);
+}
+
+/* ── Recent searches ─────────────────────────────────────────────────
+   Re-typing the same artist every session is pure friction. */
+S.recentSearches = LS.get("nd_recent_searches", []);
+
+function addRecentSearch(q) {
+  q = (q || "").trim();
+  if (q.length < 2) return;
+  S.recentSearches = [q, ...S.recentSearches.filter(x => x.toLowerCase() !== q.toLowerCase())].slice(0, 8);
+  LS.set("nd_recent_searches", S.recentSearches);
+}
+
+function renderRecentSearches() {
+  const box = $("recent-searches");
+  if (!box) return;
+  if (!S.recentSearches.length || S.searchQ) { box.style.display = "none"; return; }
+  box.style.display = "block";
+  box.innerHTML = `<div class="recent-h">
+      <span>Recent</span>
+      <button class="recent-clear" id="recent-clear">Clear</button>
+    </div>
+    <div class="recent-chips">${
+      S.recentSearches.map(q =>
+        `<button class="recent-chip" data-q="${esc(q)}"><i class="ti ti-history"></i>${esc(q)}</button>`
+      ).join("")}</div>`;
+  box.querySelectorAll(".recent-chip").forEach(el =>
+    el.addEventListener("click", () => {
+      const inp = $("search-input");
+      inp.value = el.dataset.q;
+      S.searchQ = el.dataset.q;
+      $("search-clear")?.classList.add("vis");
+      doSearch(el.dataset.q);
+      renderRecentSearches();
+    }));
+  const clr = $("recent-clear");
+  if (clr) clr.addEventListener("click", () => {
+    S.recentSearches = []; LS.set("nd_recent_searches", []);
+    renderRecentSearches();
+  });
+}
+
+/* ── Sleep timer ─────────────────────────────────────────────────────
+   The logic already existed but had no way in. For a player used at
+   night this is a headline feature, not a setting. */
+function startSleepTimer(mins) {
+  clearTimeout(S.sleepTimer);
+  if (!mins) {
+    S.sleepEnd = null; S.sleepTimer = null;
+    updateSleepChip(); toast("Sleep timer off");
+    return;
+  }
+  S.sleepEnd = Date.now() + mins * 60000;
+  S.sleepTimer = setTimeout(() => {
+    // Fade out rather than cutting — waking someone with a hard stop is rude
+    const startVol = audio.volume;
+    let v = startVol;
+    const fade = setInterval(() => {
+      v -= startVol / 20;
+      if (v <= 0) {
+        clearInterval(fade);
+        audio.pause(); audio.volume = startVol;
+        S.playing = false; setPlayIcons(false); vinylPlay(false);
+        S.sleepEnd = null; updateSleepChip();
+      } else { audio.volume = Math.max(0, v); }
+    }, 250);
+  }, mins * 60000);
+  updateSleepChip();
+  toast(`Sleeping in ${mins} min`);
+}
+
+function updateSleepChip() {
+  const chip = $("sleep-chip");
+  if (!chip) return;
+  if (!S.sleepEnd) { chip.style.display = "none"; return; }
+  chip.style.display = "inline-flex";
+  const tick = () => {
+    if (!S.sleepEnd) { chip.style.display = "none"; return; }
+    const left = Math.max(0, Math.round((S.sleepEnd - Date.now()) / 60000));
+    chip.innerHTML = `<i class="ti ti-moon"></i> ${left}m`;
+  };
+  tick();
+  clearInterval(S._sleepInt);
+  S._sleepInt = setInterval(tick, 30000);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   v28: Radio — 45,000 free stations via Radio Browser (open source, no key)
+   Deliberately a search filter, not a fifth nav tab. Radio is a way of
+   listening, not a separate place to go, and the nav bar has earned its
+   current calm.
+═══════════════════════════════════════════════════════════════════════ */
+
+async function searchRadio(q) {
+  const res = $("search-results");
+  res.innerHTML = `<div class="load-row"><span class="spinner"></span> Finding stations…</div>`;
+  try {
+    const url = `/api/radio/search?q=${encodeURIComponent(q || "")}&lang=${encodeURIComponent(S.homeLang || "hindi")}`;
+    const r = await fetch(url);
+    const d = await r.json();
+    const st = d.stations || [];
+    if (!st.length) {
+      res.innerHTML = `<div class="state-msg"><i class="ti ti-radio"></i><p>${
+        d.error === "radio_unavailable"
+          ? "Radio directory unreachable.<br>Check your connection and try again."
+          : "No stations found.<br>Try an artist, genre or city."
+      }</p></div>`;
+      return;
+    }
+    res.innerHTML = st.map(s =>
+      `<div class="track radio-row" data-id="${esc(s.id)}">
+         <div class="t-img">${s.image
+            ? `<img src="${esc(s.image)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'t-img-ph',textContent:'📻'}))">`
+            : '<span class="t-img-ph">📻</span>'}</div>
+         <div class="t-info">
+           <div class="t-title">${esc(s.title)}</div>
+           <div class="t-meta">${esc(s.artist)}${s.tags ? " · " + esc(s.tags.split(",")[0]) : ""}</div>
+         </div>
+         <div class="t-right"><span class="live-dot" title="Live"></span></div>
+       </div>`).join("");
+
+    _listRegistry.set(res, st);
+    res.querySelectorAll(".radio-row").forEach(row =>
+      row.addEventListener("click", () => {
+        const s = st.find(x => x.id === row.dataset.id);
+        if (s) playRadio(s);
+      }));
+  } catch {
+    res.innerHTML = `<div class="state-msg"><i class="ti ti-radio"></i><p>Couldn't reach the radio directory.</p></div>`;
+  }
+}
+
+/* Radio streams straight from the station — no /api/song lookup, no
+   duration, and next/prev make no sense on a live feed. */
+function playRadio(s) {
+  S.track = s;
+  S.queue = [s]; S.queueIdx = 0;
+  S.wantPlaying = true;
+  S.nextUrl = null;
+  audio.src = s.url;
+  audio.play().catch(() => toast("Station wouldn't start — try another"));
+  updateMeta(s);
+  const mini = $("mini-player"); if (mini) mini.classList.add("active");
+  S.playing = true; setPlayIcons(true); vinylPlay(true);
+  applyRadioMode(true);   // set now, not on 'playing' — a dead stream would
+                          // otherwise leave a seek bar that does nothing
+  toast(`📻 ${s.title}`);
+  // Let the directory know, so good stations rise for everyone
+  const uuid = s.id.replace(/^radio:/, "");
+  fetch(`/api/radio/click/${encodeURIComponent(uuid)}`, { method: "POST" }).catch(() => {});
+}
+
+/* Radio has no track list, so hide the controls that would lie */
+function applyRadioMode(on) {
+  document.body.classList.toggle("radio-mode", !!on);
+}
+
+/* ── Hook Radio into the existing search chips ───────────────────────── */
+(function initRadioSearch() {
+  const origDo = window.doSearch;
+  window.doSearch = function (q) {
+    if (S.sType === "radio") { addRecentSearch(q); return searchRadio(q); }
+    if (q) addRecentSearch(q);
+    return origDo ? origDo.apply(this, arguments) : undefined;
+  };
+
+  document.querySelectorAll(".s-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      if (chip.dataset.stype !== "radio") return;
+      const res = $("search-results");
+      // Empty query on the Radio chip = popular stations in your language,
+      // which is a far better cold start than a blank panel.
+      searchRadio(S.searchQ || "");
+      if (res) res.scrollTop = 0;
+    });
+  });
+})();
+
+/* ── Sleep timer UI ──────────────────────────────────────────────────── */
+(function initSleepUI() {
+  const btn = $("sleep-btn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const sheet = $("sleep-sheet");
+    if (sheet) sheet.classList.add("open");
+  });
+  document.querySelectorAll("[data-sleep]").forEach(el =>
+    el.addEventListener("click", () => {
+      startSleepTimer(parseInt(el.dataset.sleep) || 0);
+      $("sleep-sheet")?.classList.remove("open");
+    }));
+  $("sleep-close")?.addEventListener("click", () => $("sleep-sheet")?.classList.remove("open"));
+})();
+
+/* ── Boot the productivity bits ──────────────────────────────────────── */
+(function bootV28() {
+  try { restoreResume(); } catch {}
+  try { renderRecentSearches(); } catch {}
+  // Count a play once it's actually under way, not on every skip
+  audio.addEventListener("playing", () => {
+    if (S.track && !S.track.is_radio) bumpPlayCount(S.track);
+  });
+  audio.addEventListener("playing", () => applyRadioMode(!!S.track?.is_radio));
+})();
+
+/* ═══════════════════════════════════════════════════════════════════════
+   v29: Podcasts
+   A podcast is not a long song. Different data shape (show -> episode),
+   different playback (speed, skip 30s, resume ALWAYS), and shuffle/repeat
+   are meaningless. So it gets its own model rather than being forced
+   through the music one — but it reuses the same player, queue and
+   mini-player so there's nothing new to learn.
+═══════════════════════════════════════════════════════════════════════ */
+
+S.podSubs  = LS.get("nd_pod_subs", []);      // followed shows
+S.epProg   = LS.get("nd_ep_progress", {});   // per-episode position + played
+S.podShow  = null;                            // show open in the sheet
+S.speed    = LS.get("nd_speed", 1);
+
+function savePodSubs() { LS.set("nd_pod_subs", S.podSubs); }
+function saveEpProg()  { LS.set("nd_ep_progress", S.epProg); }
+
+/* ── Discovery ───────────────────────────────────────────────────────── */
+async function searchPodcasts(q) {
+  const box = $("pod-results");
+  if (!q) { box.innerHTML = ""; renderPodSubs(); return; }
+  box.innerHTML = `<div class="load-row"><span class="spinner"></span> Searching shows…</div>`;
+  try {
+    const r = await fetch(`/api/podcast/search?q=${encodeURIComponent(q)}`);
+    const d = await r.json();
+    const shows = d.shows || [];
+    if (!shows.length) {
+      box.innerHTML = `<div class="state-msg"><i class="ti ti-microphone-2"></i><p>${
+        d.error ? "Podcast directory unreachable." : "No shows found."}</p></div>`;
+      return;
+    }
+    box.innerHTML = `<div class="sec-hdr"><span class="sec-title">Shows</span></div>` +
+      shows.map(sh =>
+      `<div class="pod-row" data-pid="${esc(sh.id)}">
+         <div class="pod-art">${sh.image ? `<img src="${esc(sh.image)}" alt="" loading="lazy">` : "🎙️"}</div>
+         <div class="pod-meta">
+           <div class="pod-name">${esc(sh.title)}</div>
+           <div class="pod-by">${esc(sh.author)}</div>
+           <div class="pod-tag">${esc(sh.genre)}${sh.episodes ? ` · ${sh.episodes} episodes` : ""}</div>
+         </div>
+       </div>`).join("");
+    _listRegistry.set(box, shows);
+    box.querySelectorAll(".pod-row").forEach(row =>
+      row.addEventListener("click", () => {
+        const sh = shows.find(x => x.id === row.dataset.pid);
+        if (sh) openShow(sh);
+      }));
+  } catch {
+    box.innerHTML = `<div class="state-msg"><i class="ti ti-microphone-2"></i><p>Search failed.</p></div>`;
+  }
+}
+
+/* ── Show detail + episodes ──────────────────────────────────────────── */
+async function openShow(sh) {
+  S.podShow = sh;
+  $("pod-show-title").textContent = sh.title;
+  $("pod-show-head").innerHTML =
+    `<div class="pod-head-art">${sh.image ? `<img src="${esc(sh.image)}" alt="">` : "🎙️"}</div>
+     <div class="pod-head-meta">
+       <div class="pod-head-title">${esc(sh.title)}</div>
+       <div class="pod-head-by">${esc(sh.author || "")}</div>
+     </div>`;
+  updateFollowBtn();
+  $("pod-show-sheet").classList.add("open");
+
+  const list = $("pod-ep-list");
+  list.innerHTML = `<div class="load-row"><span class="spinner"></span> Loading episodes…</div>`;
+  try {
+    const r = await fetch(`/api/podcast/episodes?feed=${encodeURIComponent(sh.feed)}`);
+    const d = await r.json();
+    const eps = d.episodes || [];
+    if (!eps.length) {
+      list.innerHTML = `<div class="state-msg"><i class="ti ti-rss"></i><p>Couldn't read this feed.</p></div>`;
+      return;
+    }
+    S.podEpisodes = eps;
+    renderEpisodes(eps);
+  } catch {
+    list.innerHTML = `<div class="state-msg"><i class="ti ti-rss"></i><p>Couldn't reach the feed.</p></div>`;
+  }
+}
+
+function renderEpisodes(eps) {
+  const list = $("pod-ep-list");
+  list.innerHTML = eps.map(e => {
+    const p = S.epProg[e.id];
+    const pct = p && e.duration ? Math.min(100, Math.round((p.at / e.duration) * 100)) : 0;
+    const done = p?.played;
+    return `<div class="ep-row${done ? " done" : ""}" data-eid="${esc(e.id)}">
+      <div class="ep-main">
+        <div class="ep-title">${done ? '<i class="ti ti-circle-check"></i> ' : ""}${esc(e.title)}</div>
+        <div class="ep-sub">${esc(e.date || "")}${e.duration ? ` · ${fmt(e.duration)}` : ""}${
+          p && !done && p.at > 30 ? ` · ${fmt(p.at)} in` : ""}</div>
+        ${pct > 2 && !done ? `<div class="ep-bar"><span style="width:${pct}%"></span></div>` : ""}
+      </div>
+      <button class="ep-play" aria-label="Play"><i class="ti ti-player-play-filled"></i></button>
+    </div>`;
+  }).join("");
+  list.querySelectorAll(".ep-row").forEach(row =>
+    row.addEventListener("click", () => {
+      const e = eps.find(x => x.id === row.dataset.eid);
+      if (e) playEpisode(e, eps);
+    }));
+}
+
+/* ── Playback ────────────────────────────────────────────────────────
+   Episodes always resume. Nobody restarts a 90-minute interview from
+   zero because they closed the app. */
+function playEpisode(ep, list) {
+  S.track = ep;
+  S.queue = list || [ep];
+  S.queueIdx = S.queue.findIndex(x => x.id === ep.id);
+  S.wantPlaying = true;
+  S.nextUrl = null;
+
+  const p = S.epProg[ep.id];
+  S.resumeAt = p && !p.played && p.at > 20 ? p.at : 0;
+
+  audio.src = ep.url;
+  audio.playbackRate = S.speed;
+  audio.play().catch(() => toast("Episode wouldn't start"));
+  updateMeta(ep);
+  const mini = $("mini-player"); if (mini) mini.classList.add("active");
+  S.playing = true; setPlayIcons(true); vinylPlay(true);
+  applyPodcastMode(true);
+  if (S.resumeAt) toast(`Resuming at ${fmt(S.resumeAt)}`);
+}
+
+function applyPodcastMode(on) {
+  document.body.classList.toggle("podcast-mode", !!on);
+}
+
+/* Track per-episode progress, and mark finished near the end */
+let _epTick = 0;
+audio.addEventListener("timeupdate", () => {
+  const t = S.track;
+  if (!t?.is_podcast) return;
+  const now = Date.now();
+  if (now - _epTick < 5000) return;
+  _epTick = now;
+  const at = Math.floor(audio.currentTime || 0);
+  const dur = audio.duration || t.duration || 0;
+  const played = dur > 0 && at > dur - 45;      // credits count as finished
+  S.epProg[t.id] = { at: played ? 0 : at, played, when: Date.now() };
+  saveEpProg();
+});
+
+/* ── Follow / unfollow ───────────────────────────────────────────────── */
+function isFollowing(id) { return S.podSubs.some(s => s.id === id); }
+
+function updateFollowBtn() {
+  const btn = $("pod-follow");
+  if (!btn || !S.podShow) return;
+  const on = isFollowing(S.podShow.id);
+  btn.innerHTML = `<i class="ti ti-${on ? "check" : "plus"}"></i>`;
+  btn.classList.toggle("following", on);
+  btn.setAttribute("aria-label", on ? "Unfollow" : "Follow");
+}
+
+$("pod-follow")?.addEventListener("click", () => {
+  if (!S.podShow) return;
+  if (isFollowing(S.podShow.id)) {
+    S.podSubs = S.podSubs.filter(s => s.id !== S.podShow.id);
+    toast("Unfollowed");
+  } else {
+    S.podSubs = [{ ...S.podShow }, ...S.podSubs].slice(0, 60);
+    toast(`Following "${S.podShow.title}"`);
+  }
+  savePodSubs(); updateFollowBtn(); renderPodSubs();
+});
+
+function renderPodSubs() {
+  const row = $("pod-subs"), hdr = $("pod-subs-hdr");
+  if (!row) return;
+  if (!S.podSubs.length) { row.innerHTML = ""; if (hdr) hdr.style.display = "none"; return; }
+  if (hdr) hdr.style.display = "flex";
+  row.innerHTML = S.podSubs.map(sh =>
+    `<div class="mini-card" data-pid="${esc(sh.id)}">
+       <div class="mini-card-img">${sh.image ? `<img src="${esc(sh.image)}" alt="">` : "🎙️"}</div>
+       <div class="mini-card-title">${esc(sh.title)}</div>
+       <div class="mini-card-sub">${esc(sh.author || "")}</div>
+     </div>`).join("");
+  row.querySelectorAll(".mini-card[data-pid]").forEach(el =>
+    el.addEventListener("click", () => {
+      const sh = S.podSubs.find(x => x.id === el.dataset.pid);
+      if (sh) openShow(sh);
+    }));
+}
+
+/* ── Speed + skip, the two controls podcasts actually need ───────────── */
+const SPEEDS = [1, 1.25, 1.5, 1.75, 2];
+
+$("speed-btn")?.addEventListener("click", () => {
+  const i = SPEEDS.indexOf(S.speed);
+  S.speed = SPEEDS[(i + 1) % SPEEDS.length];
+  audio.playbackRate = S.speed;
+  LS.set("nd_speed", S.speed);
+  $("speed-btn").textContent = `${S.speed}×`;
+  toast(`Speed ${S.speed}×`);
+});
+
+function skipBy(secs) {
+  if (!audio.duration) return;
+  audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + secs));
+}
+
+/* In podcast mode the prev/next buttons become skip back / skip forward,
+   because jumping between 90-minute episodes is almost never what you
+   want mid-listen, and missing 30 seconds is. */
+$("ctrl-prev")?.addEventListener("click", e => {
+  if (!S.track?.is_podcast) return;
+  e.stopImmediatePropagation(); skipBy(-30);
+}, true);
+$("ctrl-next")?.addEventListener("click", e => {
+  if (!S.track?.is_podcast) return;
+  e.stopImmediatePropagation(); skipBy(30);
+}, true);
+
+/* ── Page wiring ─────────────────────────────────────────────────────── */
+(function initPodcasts() {
+  const inp = $("pod-input"), clr = $("pod-clear");
+  let t;
+  inp?.addEventListener("input", e => {
+    const q = e.target.value.trim();
+    clr?.classList.toggle("vis", !!q);
+    clearTimeout(t);
+    t = setTimeout(() => searchPodcasts(q), 450);
+  });
+  clr?.addEventListener("click", () => {
+    inp.value = ""; clr.classList.remove("vis");
+    searchPodcasts(""); inp.focus();
+  });
+  $("pod-show-close")?.addEventListener("click", () =>
+    $("pod-show-sheet").classList.remove("open"));
+
+  // Trivia moved out of the nav and into Library
+  $("open-trivia")?.addEventListener("click", () => goto("trivia"));
+  $("trivia-back")?.addEventListener("click", () => goto("library"));
+
+  renderPodSubs();
+  if (S.speed !== 1) {
+    audio.playbackRate = S.speed;
+    const sb = $("speed-btn"); if (sb) sb.textContent = `${S.speed}×`;
+  }
+  // Music never inherits a podcast speed setting
+  audio.addEventListener("playing", () => {
+    const pod = !!S.track?.is_podcast;
+    applyPodcastMode(pod);
+    audio.playbackRate = pod ? S.speed : 1;
+  });
+})();
