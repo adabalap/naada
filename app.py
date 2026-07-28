@@ -138,7 +138,10 @@ SESS.headers.update({
     "User-Agent":      "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120 Safari/537.36",
     "Referer":         "https://www.jiosaavn.com/",
     "Accept":          "application/json, text/plain, */*",
-    "Accept-Language": "en-IN,en;q=0.9,te;q=0.8,hi;q=0.7",
+    # Keep this neutral. The real language preference is applied per-request
+    # via the "L" cookie in saavn(); a hardcoded priority list here would
+    # fight it and re-bias content toward whatever we pinned.
+    "Accept-Language": "en-IN,en;q=0.9",
     "Origin":          "https://www.jiosaavn.com",
 })
 
@@ -278,8 +281,21 @@ def norm(s: dict) -> dict:
 def saavn(params: dict, timeout=12) -> dict:
     defaults = {"_format":"json","_marker":"0","api_version":"4","ctx":"web6dot0"}
     defaults.update(params)
+
+    # JioSaavn weights content (albums, new releases, featured) by a language
+    # PRIORITY list held in the "L" cookie, not just the per-call `language`
+    # param. If we leave the session default in place, a single
+    # language=telugu argument gets outvoted and you get Bollywood anyway.
+    # So when a call names a language, lead the cookie's priority list with
+    # it, keeping the others as fallbacks so nothing 404s on thin catalogues.
+    cookies = None
+    lang = params.get("language")
+    if lang:
+        order = [lang] + [x for x in ("hindi","english","tamil","telugu") if x != lang]
+        cookies = {"L": "%2C".join(order)}   # %2C = comma, as JioSaavn stores it
+
     try:
-        r = SESS.get(SAAVN, params=defaults, timeout=timeout)
+        r = SESS.get(SAAVN, params=defaults, timeout=timeout, cookies=cookies)
         r.raise_for_status()
         data = r.json()
         # JioSaavn sometimes returns literal JSON `null` or a list. Normalise:
@@ -320,6 +336,35 @@ def sw():
     # Never cache the SW itself, so version bumps always take effect
     r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return r
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Digital Asset Links — proves this domain and the Naada Android app are the
+# same owner, which is what lets the installed .apk (a Trusted Web Activity)
+# run FULLSCREEN with no browser address bar.
+#
+# The SHA-256 fingerprint below must match your release signing key. Get it
+# with:
+#     keytool -list -v -keystore apk/naada-release.keystore -alias naada
+# then set it in the environment (so the real value never lives in git):
+#     export NAADA_APK_FINGERPRINT="AA:BB:CC:...:FF"
+# Until it's set this returns an empty list, which is harmless — the app
+# still works, it just shows the URL bar until the fingerprint is in place.
+# ─────────────────────────────────────────────────────────────────────────
+@app.route("/.well-known/assetlinks.json")
+def asset_links():
+    fp = os.environ.get("NAADA_APK_FINGERPRINT", "").strip()
+    if not fp:
+        return jsonify([])
+    return jsonify([{
+        "relation": ["delegate_permission/common.handle_all_urls"],
+        "target": {
+            "namespace": "android_app",
+            "package_name": "com.adabala.naada",
+            "sha256_cert_fingerprints": [fp],
+        },
+    }])
+
 
 @app.route("/favicon.ico")
 def favicon_ico():
@@ -1264,293 +1309,6 @@ def run_server(daemon_mode=False):
         use_reloader=False,
         ssl_context=ssl_ctx,
     )
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Radio Browser — 45,000+ community-catalogued internet stations.
-# Free, open-source, no API key. Proxied through here rather than called
-# from the browser for two reasons: the service asks for a descriptive
-# User-Agent (which fetch() cannot set), and proxying avoids CORS entirely.
-# Docs: https://api.radio-browser.info
-# ─────────────────────────────────────────────────────────────────────────
-RADIO_SERVERS = [
-    "https://de1.api.radio-browser.info",
-    "https://nl1.api.radio-browser.info",
-    "https://at1.api.radio-browser.info",
-]
-RADIO_UA = "Naada/1.0 (personal music player; github.com/adabalap/naada)"
-_radio_cache = {}
-RADIO_TTL = 1800          # 30 min — station lists change slowly
-
-
-def _radio_get(path, params=None):
-    """Try each mirror in turn; the service asks apps to fail over politely."""
-    key = f"{path}|{sorted((params or {}).items())}"
-    hit = _radio_cache.get(key)
-    if hit and time.time() - hit[0] < RADIO_TTL:
-        return hit[1]
-    last = None
-    for base in RADIO_SERVERS:
-        try:
-            r = requests.get(f"{base}/json/{path}",
-                             params=params or {},
-                             headers={"User-Agent": RADIO_UA},
-                             timeout=8)
-            if r.ok:
-                data = r.json()
-                _radio_cache[key] = (time.time(), data)
-                return data
-            last = f"HTTP {r.status_code}"
-        except Exception as e:
-            last = str(e)
-            continue
-    log.warning("radio-browser unreachable: %s", last)
-    return None
-
-
-def _radio_clean(stations, limit=40):
-    """Normalise to the same shape the player already uses for tracks."""
-    out = []
-    for s in stations or []:
-        url = s.get("url_resolved") or s.get("url")
-        if not url or not url.startswith("http"):
-            continue
-        # Skip stations the service last failed to reach
-        if s.get("lastcheckok") == 0:
-            continue
-        out.append({
-            "id":       "radio:" + (s.get("stationuuid") or url),
-            "title":    (s.get("name") or "Unknown station").strip(),
-            "artist":   ", ".join(x for x in [s.get("country"), s.get("codec")] if x) or "Radio",
-            "image":    s.get("favicon") or "",
-            "url":      url,
-            "duration": 0,
-            "is_radio": True,
-            "tags":     (s.get("tags") or "")[:80],
-        })
-        if len(out) >= limit:
-            break
-    return out
-
-
-@app.route("/api/radio/search")
-def api_radio_search():
-    """Search stations by name, or browse by language when q is empty."""
-    q    = (request.args.get("q") or "").strip()
-    lang = (request.args.get("lang") or "").strip().lower()
-    limit = min(int(request.args.get("limit", 40)), 100)
-
-    params = {"hidebroken": "true", "order": "clickcount",
-              "reverse": "true", "limit": limit * 2}
-    if q:
-        params["name"] = q
-        data = _radio_get("stations/search", params)
-    else:
-        # No query: show what's popular in the user's language, which is a
-        # far better cold start than a global top-40 of Dutch dance stations.
-        lang_map = {"telugu": "telugu", "hindi": "hindi",
-                    "tamil": "tamil", "english": "english"}
-        params["language"] = lang_map.get(lang, "hindi")
-        data = _radio_get("stations/search", params)
-
-    if data is None:
-        return jsonify({"error": "radio_unavailable", "stations": []}), 503
-    return jsonify({"stations": _radio_clean(data, limit)})
-
-
-@app.route("/api/radio/click/<path:uuid>", methods=["POST"])
-def api_radio_click(uuid):
-    """Report a play so popular stations rank higher for everyone.
-    The service explicitly asks apps to do this; it costs nothing."""
-    try:
-        requests.get(f"{RADIO_SERVERS[0]}/json/url/{uuid}",
-                     headers={"User-Agent": RADIO_UA}, timeout=4)
-    except Exception:
-        pass
-    return jsonify({"ok": True})
-
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Podcasts. Two free, keyless sources working together:
-#   1. iTunes Search API  — discovery. No key, no account, ~5M shows, and
-#      it returns the show's RSS feedUrl, which is the important part.
-#   2. The RSS feed itself — the full episode archive. A podcast IS an RSS
-#      feed; everything else is a directory pointing at one.
-# Parsed here with the stdlib rather than feedparser so Termux installs
-# need no extra pip step.
-# (Podcast Index is the more purist open-source directory, but it needs an
-#  API key plus HMAC signing. For a personal app this pair is keyless and
-#  can't be revoked out from under you.)
-# ─────────────────────────────────────────────────────────────────────────
-import xml.etree.ElementTree as _ET
-from urllib.parse import urlparse as _urlparse
-
-_POD_NS = {
-    "itunes":  "http://www.itunes.com/dtds/podcast-1.0.dtd",
-    "content": "http://purl.org/rss/1.0/modules/content/",
-}
-_pod_cache = {}
-POD_TTL = 1800
-POD_UA = "Naada/1.0 (personal podcast player)"
-POD_MAX_BYTES = 6 * 1024 * 1024      # some archives are enormous
-POD_MAX_EPISODES = 200
-
-
-def _pod_dur_to_secs(v):
-    """itunes:duration is any of 'HH:MM:SS', 'MM:SS' or plain seconds."""
-    if not v:
-        return 0
-    v = v.strip()
-    try:
-        if ":" in v:
-            parts = [int(float(x)) for x in v.split(":")]
-            secs = 0
-            for part in parts:
-                secs = secs * 60 + part
-            return secs
-        return int(float(v))
-    except Exception:
-        return 0
-
-
-def _pod_safe_feed(url):
-    """The feed URL arrives from the client, so don't let it point inward."""
-    try:
-        u = _urlparse(url)
-    except Exception:
-        return False
-    if u.scheme not in ("http", "https"):
-        return False
-    host = (u.hostname or "").lower()
-    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-        return False
-    if host.startswith(("192.168.", "10.", "169.254.")):
-        return False
-    if host.startswith("172."):
-        try:
-            if 16 <= int(host.split(".")[1]) <= 31:
-                return False
-        except Exception:
-            pass
-    return True
-
-
-@app.route("/api/podcast/search")
-def api_podcast_search():
-    q = (request.args.get("q") or "").strip()
-    country = (request.args.get("country") or "IN").upper()[:2]
-    if not q:
-        return jsonify({"shows": []})
-
-    key = f"pod-search|{q.lower()}|{country}"
-    hit = _pod_cache.get(key)
-    if hit and time.time() - hit[0] < POD_TTL:
-        return jsonify({"shows": hit[1]})
-
-    try:
-        r = requests.get("https://itunes.apple.com/search",
-                         params={"term": q, "media": "podcast",
-                                 "entity": "podcast", "country": country,
-                                 "limit": 25},
-                         headers={"User-Agent": POD_UA}, timeout=10)
-        r.raise_for_status()
-        raw = r.json().get("results", [])
-    except Exception as e:
-        log.warning("podcast search failed: %s", e)
-        return jsonify({"error": "podcast_unavailable", "shows": []}), 503
-
-    shows = []
-    for it in raw:
-        feed = it.get("feedUrl")
-        if not feed or not _pod_safe_feed(feed):
-            continue          # a show with no feed is just a poster
-        shows.append({
-            "id":       "pod:" + str(it.get("collectionId") or feed),
-            "title":    it.get("collectionName") or "Untitled",
-            "author":   it.get("artistName") or "",
-            "image":    it.get("artworkUrl600") or it.get("artworkUrl100") or "",
-            "genre":    it.get("primaryGenreName") or "",
-            "episodes": it.get("trackCount") or 0,
-            "feed":     feed,
-        })
-    _pod_cache[key] = (time.time(), shows)
-    return jsonify({"shows": shows})
-
-
-@app.route("/api/podcast/episodes")
-def api_podcast_episodes():
-    feed = (request.args.get("feed") or "").strip()
-    if not feed or not _pod_safe_feed(feed):
-        return jsonify({"error": "bad_feed", "episodes": []}), 400
-
-    key = f"pod-feed|{feed}"
-    hit = _pod_cache.get(key)
-    if hit and time.time() - hit[0] < POD_TTL:
-        return jsonify(hit[1])
-
-    try:
-        r = requests.get(feed, headers={"User-Agent": POD_UA},
-                         timeout=15, stream=True)
-        r.raise_for_status()
-        body = b""
-        for chunk in r.iter_content(65536):
-            body += chunk
-            if len(body) > POD_MAX_BYTES:
-                break
-        root = _ET.fromstring(body)
-    except Exception as e:
-        log.warning("podcast feed failed (%s): %s", feed[:60], e)
-        return jsonify({"error": "feed_unreadable", "episodes": []}), 502
-
-    ch = root.find("channel")
-    if ch is None:
-        return jsonify({"error": "not_a_podcast", "episodes": []}), 502
-
-    def txt(el, path, ns=None):
-        f = el.find(path, ns) if ns else el.find(path)
-        return (f.text or "").strip() if f is not None and f.text else ""
-
-    show_img = ""
-    ii = ch.find("itunes:image", _POD_NS)
-    if ii is not None:
-        show_img = ii.get("href") or ""
-    if not show_img:
-        show_img = txt(ch, "image/url")
-
-    episodes = []
-    for item in ch.findall("item")[:POD_MAX_EPISODES]:
-        enc = item.find("enclosure")
-        url = enc.get("url") if enc is not None else ""
-        if not url or not url.startswith("http"):
-            continue                      # no audio, not an episode
-        ep_img = ""
-        ei = item.find("itunes:image", _POD_NS)
-        if ei is not None:
-            ep_img = ei.get("href") or ""
-        episodes.append({
-            "id":       "ep:" + (txt(item, "guid") or url),
-            "title":    txt(item, "title") or "Untitled episode",
-            "artist":   txt(ch, "title"),
-            "url":      url,
-            "image":    ep_img or show_img,
-            "duration": _pod_dur_to_secs(txt(item, "itunes:duration", _POD_NS)),
-            "date":     txt(item, "pubDate")[:16],
-            "summary":  (txt(item, "itunes:summary", _POD_NS)
-                         or txt(item, "description"))[:400],
-            "is_podcast": True,
-        })
-
-    out = {
-        "show": {
-            "title":  txt(ch, "title"),
-            "author": txt(ch, "itunes:author", _POD_NS),
-            "image":  show_img,
-        },
-        "episodes": episodes,
-    }
-    _pod_cache[key] = (time.time(), out)
-    return jsonify(out)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,51 @@
+{
+  "packageId": "com.adabala.naada.twa",
+  "host": "naada.adabala.com",
+  "name": "Naada · నాద",
+  "launcherName": "Naada",
+  "display": "standalone",
+  "themeColor": "#4A1A6B",
+  "themeColorDark": "#000000",
+  "navigationColor": "#000000",
+  "navigationColorDark": "#000000",
+  "navigationDividerColor": "#000000",
+  "navigationDividerColorDark": "#000000",
+  "backgroundColor": "#FAFAF8",
+  "enableNotifications": true,
+  "startUrl": "/",
+  "iconUrl": "https://naada.adabala.com/static/icons/icon-512.png",
+  "maskableIconUrl": "https://naada.adabala.com/static/icons/maskable-512.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "/opt/naada/apk/android.keystore",
+    "alias": "android"
+  },
+  "appVersionName": "4",
+  "appVersionCode": 4,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://naada.adabala.com/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://naada.adabala.com/",
+  "minSdkVersion": 21,
+  "orientation": "default",
+  "fingerprints": [],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": [],
+  "protocolHandlers": [],
+  "fileHandlers": [],
+  "launchHandlerClientMode": "",
+  "displayOverride": [
+    "standalone",
+    "minimal-ui",
+    "window-controls-overlay"
+  ],
+  "appVersion": "4"
+}

@@ -42,11 +42,24 @@
        · apple-touch-icon: iOS ignores the manifest entirely and needs this.
        No ?v= query strings here — they were stale (stuck at v22) and a
        versioned favicon URL just leaves the old icon cached under the old key. -->
-  <link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
-  <link rel="icon" href="/static/icons/favicon.ico" sizes="16x16 32x32 48x48">
-  <link rel="icon" href="/static/icons/favicon-32.png" type="image/png" sizes="32x32">
-  <link rel="icon" href="/static/icons/favicon-16.png" type="image/png" sizes="16x16">
-  <link rel="apple-touch-icon" href="/static/icons/icon-180.png" sizes="180x180">
+  <!-- Favicons for the tab strip.
+       Bold tab-specific artwork (the header wave mark), NOT the app icon —
+       the app icon's fine bars collapse to a smudge at 16px. The ?v query
+       is a cache-buster: browsers and Cloudflare cache favicons very
+       aggressively, and a previously-empty cached favicon is the most
+       common reason a tab icon "won't show up" even after it's fixed.
+       Bumping v forces a fresh fetch under a new cache key.
+
+       PNG is listed first and is the reliable path. The .ico covers the
+       bare /favicon.ico request a browser makes before any CSS/JS loads.
+       app.js MAY later swap in an animated canvas version, but only if
+       that genuinely succeeds — these static links always remain as the
+       floor, so the tab is never blank. -->
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png?v=38">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png?v=38">
+  <link rel="icon" type="image/png" sizes="48x48" href="/static/icons/favicon-48.png?v=38">
+  <link rel="shortcut icon" href="/static/icons/favicon.ico?v=38">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png?v=38">
   <script>
   /* Resolve theme before first paint to avoid a flash. "auto" follows the OS. */
   (function () {
@@ -60,7 +73,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=33">
+  <link rel="stylesheet" href="/static/app.css?v=38">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
 </head>
 <body>
@@ -88,8 +101,6 @@
         <span class="lang-pill-glyph" id="lang-pill-glyph">త</span>
         <i class="ti ti-chevron-down lang-pill-caret"></i>
       </button>
-      <button class="icon-btn" id="btn-sleep" aria-label="Sleep timer"><i class="ti ti-moon"></i></button>
-      <button class="icon-btn" id="btn-lyrics" aria-label="Lyrics"><i class="ti ti-microphone-2"></i></button>
     </div>
   </header>
 
@@ -251,7 +262,6 @@
         <button class="s-chip active" data-stype="songs"   role="tab">Songs</button>
         <button class="s-chip"        data-stype="albums"  role="tab">Albums</button>
         <button class="s-chip"        data-stype="artists" role="tab">Artists</button>
-        <button class="s-chip"        data-stype="radio"   role="tab"><i class="ti ti-radio"></i> Radio</button>
         <button class="s-chip s-chip-ai" data-stype="mood" role="tab"><i class="ti ti-sparkles"></i> Mood</button>
       </div>
       <div id="recent-searches" class="recent-box" style="display:none"></div>
@@ -309,15 +319,6 @@
       <div class="section-divider"></div>
 
       <!-- Playlists -->
-      <button class="lib-link" id="open-trivia">
-        <span class="lib-link-ico"><i class="ti ti-bulb"></i></span>
-        <span class="lib-link-txt">
-          <span class="lib-link-t">Music Trivia</span>
-          <span class="lib-link-s">AI cards from songs you've played</span>
-        </span>
-        <i class="ti ti-chevron-right"></i>
-      </button>
-
       <div class="sec-hdr" id="sec-playlists">
         <span class="sec-title" id="pl-sec-title">Albums &amp; Playlists</span>
         <span class="sec-actions">
@@ -353,25 +354,7 @@
 
     <!-- QUEUE ─────────────────────────────────────────────────────────── -->
     
-    <main class="page" id="page-podcasts" aria-label="Podcasts">
-      <div class="pod-hero">
-        <div class="pod-hero-title">Podcasts</div>
-        <div class="pod-hero-sub">Search millions of shows &middot; free, no account</div>
-      </div>
-      <div class="search-top pod-search">
-        <div class="search-box">
-          <i class="ti ti-search"></i>
-          <input id="pod-input" type="search" placeholder="Search shows, e.g. Telugu history"
-                 autocomplete="off" aria-label="Search podcasts">
-          <button id="pod-clear" class="search-clear" aria-label="Clear"><i class="ti ti-x"></i></button>
-        </div>
-      </div>
-      <div class="sec-hdr" id="pod-subs-hdr" style="display:none">
-        <span class="sec-title">Following</span>
-      </div>
-      <div id="pod-subs" class="h-row"></div>
-      <div id="pod-results"></div>
-    </main>
+    
     <main class="page" id="page-queue" aria-label="Queue">
       <div class="sec-hdr" style="padding-top:16px">
         <span style="display:inline-flex;align-items:center;gap:6px">
@@ -391,12 +374,6 @@
 
     <!-- TRIVIA ────────────────────────────────────────────────────────── -->
     <main class="page" id="page-trivia" aria-label="Trivia">
-      <div class="sec-hdr" style="padding-top:16px">
-        <span style="display:inline-flex;align-items:center;gap:6px">
-          <button class="icon-btn" id="trivia-back" aria-label="Back"><i class="ti ti-arrow-left"></i></button>
-          <span class="sec-title">Music Trivia</span>
-        </span>
-      </div>
       <div class="lib-hero">
         <div class="lib-hero-title">Music Trivia</div>
         <div class="lib-hero-sub">AI cards from songs you've played</div>
@@ -417,8 +394,13 @@
     <div class="nav-item active" data-page="home"><i class="ti ti-home"></i><span>Home</span></div>
     <div class="nav-item" data-page="search"><i class="ti ti-search"></i><span>Search</span></div>
     <div class="nav-item" data-page="library"><i class="ti ti-heart"></i><span>Library</span></div>
-    <div class="nav-item" data-page="podcasts"><i class="ti ti-microphone-2"></i><span>Podcasts</span></div>
+    <div class="nav-item" data-page="trivia"><i class="ti ti-bulb"></i><span>Trivia</span></div>
   </nav>
+
+  <!-- Back-to-top: appears on long lists, scrolls the active page up -->
+  <button class="to-top" id="to-top" aria-label="Back to top">
+    <i class="ti ti-arrow-up"></i>
+  </button>
 
   <!-- ── Mini Player (compact bar, tap to expand) ──────────────────────── -->
   <div class="mini-player" id="mini-player" role="button" tabindex="0" aria-label="Open now playing">
@@ -445,8 +427,6 @@
   <div class="now-header">
     <button class="icon-btn" id="now-close" aria-label="Minimize"><i class="ti ti-chevron-down"></i></button>
     <div class="now-source" id="now-source">Now Playing</div>
-    <span class="sleep-chip" id="sleep-chip" style="display:none"></span>
-    <button class="icon-btn" id="speed-btn" aria-label="Playback speed">1&times;</button>
     <button class="icon-btn" id="sleep-btn" aria-label="Sleep timer"><i class="ti ti-moon"></i></button>
     <button class="icon-btn" id="now-queue-btn" aria-label="Show queue"><i class="ti ti-list"></i></button>
   </div>
@@ -466,7 +446,7 @@
   <div class="now-actions">
     <button class="now-act" id="np-like" aria-label="Like"><i class="ti ti-heart"></i></button>
     <button class="now-act" id="np-add-pl" aria-label="Add to playlist"><i class="ti ti-playlist-add"></i></button>
-    <button class="now-act" id="np-lyrics" aria-label="Lyrics"><i class="ti ti-microphone-2"></i></button>
+    <button class="now-act" id="np-lyrics" aria-label="Lyrics"><i class="ti ti-file-text"></i></button>
     <button class="now-act" id="np-story" aria-label="Story / trivia"><i class="ti ti-sparkles"></i></button>
     <button class="now-act" id="np-radio" aria-label="Start radio"><i class="ti ti-radio"></i></button>
   </div>
@@ -675,18 +655,7 @@
 </div>
 
 
-<div class="sheet" id="pod-show-sheet" role="dialog" aria-modal="true" aria-label="Podcast">
-  <div class="sheet-handle"></div>
-  <div class="sheet-header">
-    <button class="icon-btn" id="pod-show-close" aria-label="Close"><i class="ti ti-x"></i></button>
-    <span class="sheet-title" id="pod-show-title">Show</span>
-    <button class="icon-btn" id="pod-follow" aria-label="Follow"><i class="ti ti-plus"></i></button>
-  </div>
-  <div class="sheet-body">
-    <div class="pod-show-head" id="pod-show-head"></div>
-    <div id="pod-ep-list" role="list"></div>
-  </div>
-</div>
+
 
 <!-- ── Sleep timer modal ──────────────────────────────────────────────── -->
 <div class="modal-back" id="sleep-modal" role="dialog" aria-modal="true" aria-label="Sleep timer">
@@ -717,20 +686,7 @@
 </div>
 
 <!-- ── Sleep timer ────────────────────────────────────────────────────── -->
-<div class="modal-back" id="sleep-sheet" role="dialog" aria-modal="true" aria-label="Sleep timer">
-  <div class="modal">
-    <div class="modal-handle"></div>
-    <div class="modal-title">Sleep timer</div>
-    <div class="modal-opts">
-      <div class="modal-opt" data-sleep="15"><i class="ti ti-moon"></i>15 minutes</div>
-      <div class="modal-opt" data-sleep="30"><i class="ti ti-moon"></i>30 minutes</div>
-      <div class="modal-opt" data-sleep="45"><i class="ti ti-moon"></i>45 minutes</div>
-      <div class="modal-opt" data-sleep="60"><i class="ti ti-moon"></i>1 hour</div>
-      <div class="modal-opt danger" data-sleep="0"><i class="ti ti-moon-off"></i>Turn off</div>
-    </div>
-    <button class="modal-cancel" id="sleep-close">Cancel</button>
-  </div>
-</div>
+
 
 <!-- ── Track context menu (long-press any song) ───────────────────────── -->
 <div class="modal-back" id="track-menu" role="dialog" aria-modal="true" aria-label="Song options">
@@ -805,6 +761,6 @@
 <!-- ── Toast ──────────────────────────────────────────────────────────── -->
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=33"></script>
+<script src="/static/app.js?v=38"></script>
 </body>
 </html>

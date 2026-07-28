@@ -1,5 +1,5 @@
 // Bump VER on every release to invalidate old caches.
-const VER   = "naada-v33";
+const VER   = "naada-v38";
 const SHELL = ["/", "/static/index.html", "/static/app.css",
                "/static/app.js", "/manifest.json", "/static/icons/icon.svg"];
 
@@ -11,7 +11,12 @@ self.addEventListener("install", e => {
 self.addEventListener("activate", e => {
   e.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== VER).map(k => caches.delete(k)))
+      // Drop stale app-shell caches, but KEEP the audio buffer — it holds
+      // pre-downloaded songs for offline playback and shouldn't be wiped
+      // just because we shipped a UI update. It manages its own eviction.
+      Promise.all(keys
+        .filter(k => k !== VER && !k.startsWith("naada-audio"))
+        .map(k => caches.delete(k)))
     ).then(() => self.clients.claim())   // take control of open pages now
   );
 });

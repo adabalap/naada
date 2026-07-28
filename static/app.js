@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v33";
+const APP_VERSION = "v38";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -23,7 +23,8 @@ const LS = {
 /* ── State ──────────────────────────────────────────────────────────────── */
 const S = {
   page:       "home",
-  homeLang:   "hindi",
+  homeLang:   "telugu",   // matches the bootstrap default; overwritten by
+                          // the user's saved defaultLang on init
   sType:      "songs",
   queue:      [],
   queueIdx:   -1,
@@ -130,7 +131,6 @@ function goto(page) {
   if (page === "library") renderLibrary();
   if (page === "queue")   renderQueueEditable();
   if (page === "trivia")  loadTrivia();
-  if (page === "podcasts" && typeof renderPodSubs === "function") renderPodSubs();
   // The language pill only applies to Home content — hide it elsewhere
   const pill = $("lang-pill");
   if (pill) pill.style.display = page === "home" ? "" : "none";
@@ -550,25 +550,33 @@ async function play(track, queue=S.queue, idx=-1) {
   if (S.page === "home") { renderHomeLibraryShelves(); applyShelfVisibility(); }
 
   try {
-    let d, streamUrl;
-    // Use the URL we lined up earlier if it's for this exact track — this is
-    // what lets the next song start while the app is backgrounded and the
-    // Termux server may be throttled.
-    if (S.nextUrl && S.nextUrl.id === track.id && S.nextUrl.url) {
-      window.ndlog && window.ndlog(`  using prefetched url for ${track.id}`);
+    let d, streamUrl, objectUrl = null;
+    // Best case: the bytes are already sitting in our cache from look-ahead
+    // buffering. This is what plays through a tunnel or dead zone — zero
+    // network, instant start.
+    objectUrl = await bufferedUrl(track.id);
+    if (objectUrl) {
+      window.ndlog && window.ndlog(`playing from byte buffer: ${track.id}`);
+      streamUrl = objectUrl;
+      d = {};
+    } else if (S.nextUrl && S.nextUrl.id === track.id && S.nextUrl.url) {
+      // Next best: we resolved this track's CDN url ahead of time — still
+      // needs network for the bytes, but skips the server round-trip.
+      window.ndlog && window.ndlog(`using prefetched url for ${track.id}`);
       d = { url: S.nextUrl.url };
       streamUrl = S.nextUrl.url;
       S.nextUrl = null;
     } else {
-      window.ndlog && window.ndlog(`  fetching /api/song/${track.id}`);
+      window.ndlog && window.ndlog(`fetching /api/song/${track.id}`);
       const r = await fetch(`/api/song/${track.id}`);
       d = await r.json();
-      window.ndlog && window.ndlog(`  got response: url=${(d.url||"").slice(0,40)}`);
+      window.ndlog && window.ndlog(`got response: url=${(d.url||"").slice(0,40)}`);
       streamUrl = d.url || "";
     }
 
-    // Validate stream URL — must be absolute https:// to avoid 404 on local server
-    if (!streamUrl || !streamUrl.startsWith("http")) {
+    // Validate — a blob: URL from the buffer is always fine; otherwise it
+    // must be an absolute http(s) URL.
+    if (!streamUrl || (!streamUrl.startsWith("http") && !streamUrl.startsWith("blob:"))) {
       window.ndlog && window.ndlog(`  BAD URL: "${streamUrl}"`);
       throw new Error("no_stream_url");
     }
@@ -581,8 +589,16 @@ async function play(track, queue=S.queue, idx=-1) {
     audio.removeAttribute("src");
     audio.load();
 
+    // Release any previous blob URL so we don't leak memory across tracks
+    if (S._lastObjectUrl) { try { URL.revokeObjectURL(S._lastObjectUrl); } catch {} S._lastObjectUrl = null; }
+
     audio.src = streamUrl;
-    audio.crossOrigin = "anonymous";   // needed for some CDN responses
+    if (streamUrl.startsWith("blob:")) {
+      S._lastObjectUrl = streamUrl;      // buffered bytes: no CORS needed
+      audio.removeAttribute("crossorigin");
+    } else {
+      audio.crossOrigin = "anonymous";   // needed for some CDN responses
+    }
     window.ndlog && window.ndlog(`  audio.src set, calling play()`);
 
     // Wait for enough data, with timeout
@@ -901,6 +917,35 @@ function renderLibrary() {
   }
 }
 
+/* A playlist/album cover that actually distinguishes one from another.
+   Four+ artworks → a 2×2 mosaic. One to three → the first, full-bleed.
+   Empty → a coloured tile with the album's initial, seeded from its name
+   so each empty album gets its own colour instead of an identical gradient
+   with a music note. */
+const COVER_HUES = [265, 330, 350, 20, 190, 160, 290, 220];
+
+function playlistCover(pl) {
+  const arts = [];
+  for (const s of (pl.songs || [])) {
+    if (s.image && !arts.includes(s.image)) arts.push(s.image);
+    if (arts.length === 4) break;
+  }
+  if (arts.length >= 4) {
+    return `<div class="cover-quad">${
+      arts.map(a => `<img src="${esc(a)}" alt="" loading="lazy">`).join("")}</div>`;
+  }
+  if (arts.length >= 1) {
+    return `<img src="${esc(arts[0])}" alt="" loading="lazy">`;
+  }
+  // Empty: deterministic colour + initial, so it reads as *this* album
+  const name = (pl.name || "?").trim();
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
+  const hue = COVER_HUES[h % COVER_HUES.length];
+  const initial = esc(name.charAt(0).toUpperCase() || "♪");
+  return `<div class="cover-initial" style="--h:${hue}">${initial}</div>`;
+}
+
 function renderPlaylists() {
   const grid = $("playlist-grid");
   if (typeof renderFolders === "function") renderFolders();
@@ -920,13 +965,10 @@ function renderPlaylists() {
   // Pinned playlists always sort to the top
   const ordered = [...items].sort((a,b) => (b.pinned?1:0) - (a.pinned?1:0));
   grid.innerHTML = ordered.map(pl => {
-    const first = pl.songs?.[0];
     return `<div class="pl-card" data-plid="${esc(pl.id)}">
       <button class="pl-card-menu" data-plmenu="${esc(pl.id)}" aria-label="Album options"><i class="ti ti-dots"></i></button>
       ${pl.pinned ? `<span class="pin-badge"><i class="ti ti-pin-filled"></i></span>` : ""}
-      <div class="pl-card-img">
-        ${first?.image ? `<img src="${esc(first.image)}" alt="">` : "🎵"}
-      </div>
+      <div class="pl-card-img">${playlistCover(pl)}</div>
       <div class="pl-card-name">${esc(pl.name)}</div>
       <div class="pl-card-count">${pl.songs.length} song${pl.songs.length!==1?"s":""}</div>
     </div>`;
@@ -1098,10 +1140,9 @@ function openAddToPlaylist(bulkOpts = null) {
     list.innerHTML = `<div class="state-msg"><i class="ti ti-playlist"></i><p>No other playlists yet.<br>Tap + to create one${bulkOpts ? " from your selection" : ""}.</p></div>`;
   } else {
     list.innerHTML = targets.map(pl => {
-      const first = pl.songs?.[0];
       return `<div class="pl-select-item" data-plid="${esc(pl.id)}">
         <div class="pl-select-thumb">
-          ${first?.image ? `<img src="${esc(first.image)}" alt="">` : "🎵"}
+          ${playlistCover(pl)}
         </div>
         <div>
           <div class="pl-select-name">${esc(pl.name)}</div>
@@ -1214,17 +1255,20 @@ async function openLyrics() {
   }
 }
 
-$("btn-lyrics").addEventListener("click", openLyrics);
+// Lyrics can be opened from the now-playing screen (np-lyrics wired below)
 $("lyrics-close").addEventListener("click", () => $("lyrics-sheet").classList.remove("open"));
 
-/* ── Sleep timer ─────────────────────────────────────────────────────────── */
-$("btn-sleep").addEventListener("click", () => {
+/* ── Sleep timer ─────────────────────────────────────────────────────────
+   Opened from the now-playing header's moon button. It's a playback control,
+   so it lives with playback rather than cluttering the global app header. */
+function openSleepModal() {
   if (S.sleepEnd) {
     const rem = Math.ceil((S.sleepEnd - Date.now()) / 60000);
     toast(`Sleep timer: ${rem} min left`);
   }
   $("sleep-modal").classList.add("open");
-});
+}
+$("sleep-btn")?.addEventListener("click", openSleepModal);
 $("sleep-dismiss").addEventListener("click", () => $("sleep-modal").classList.remove("open"));
 
 $$(".modal-opt[data-mins]").forEach(el => {
@@ -1232,15 +1276,17 @@ $$(".modal-opt[data-mins]").forEach(el => {
     $("sleep-modal").classList.remove("open");
     const mins = parseInt(el.dataset.mins);
     clearTimeout(S.sleepTimer); S.sleepEnd = null;
-    if (mins === 0) { toast("Sleep timer cancelled"); return; }
+    const chip = $("sleep-btn");
+    if (mins === 0) { toast("Sleep timer cancelled"); chip?.classList.remove("active"); return; }
     S.sleepEnd = Date.now() + mins * 60000;
     S.sleepTimer = setTimeout(() => {
       audio.pause(); S.playing = false;
       setPlayIcons(false);
       vinylPlay(false); S.sleepEnd = null;
+      chip?.classList.remove("active");
       toast("Sleep timer — goodnight 🌙", 4000);
     }, mins * 60000);
-    $("btn-sleep").classList.add("active");
+    chip?.classList.add("active");
     toast(`Sleep timer: ${mins} min`);
   });
 });
@@ -1425,9 +1471,8 @@ function renderHomeLibraryShelves() {
   if (pl) {
     if (S.playlists.length) {
       pl.innerHTML = S.playlists.slice(0,12).map(p => {
-        const first = p.songs?.[0];
         return `<div class="mini-card" data-plid="${esc(p.id)}">
-           <div class="mini-card-img pl">${first?.image?`<img src="${esc(first.image)}" alt="">`:"🎵"}</div>
+           <div class="mini-card-img pl">${playlistCover(p)}</div>
            <div class="mini-card-title">${esc(p.name)}</div>
            <div class="mini-card-sub">${p.songs.length} songs</div>
          </div>`;
@@ -1928,8 +1973,7 @@ const BACKUP_KEYS = [
   "nd_shuffle", "nd_repeat", "nd_ai_anecdote",
   "nd_shelf_touch", "nd_collapsed",
   "nd_pinned", "nd_theme", "nd_folders",
-  "nd_pod_subs", "nd_ep_progress", "nd_speed", "nd_playcounts",
-  "nd_recent_searches", "nd_resume",
+  "nd_playcounts", "nd_recent_searches", "nd_resume",
 ];
 
 function exportData() {
@@ -2742,9 +2786,33 @@ function renderFolders() {
 
   if (!S.folders.length) { grid.innerHTML = ""; return; }
   grid.innerHTML = S.folders.map(f => {
-    const n = f.plIds.filter(id => S.playlists.some(p => p.id === id)).length;
+    const albums = f.plIds
+      .map(id => S.playlists.find(p => p.id === id))
+      .filter(Boolean);
+    const n = albums.length;
+
+    // Cover: pull the first artwork from up to four albums inside. A folder
+    // full of Ram Charan albums now shows those posters, not a blank icon.
+    const arts = [];
+    for (const pl of albums) {
+      const img = pl.songs?.find(s => s.image)?.image;
+      if (img) arts.push(img);
+      if (arts.length === 4) break;
+    }
+
+    let cover;
+    if (arts.length >= 4) {
+      cover = `<div class="folder-cover quad">${
+        arts.slice(0,4).map(a => `<img src="${esc(a)}" alt="" loading="lazy">`).join("")}</div>`;
+    } else if (arts.length >= 1) {
+      // 1–3 covers: show the first full-bleed rather than an awkward grid
+      cover = `<div class="folder-cover single"><img src="${esc(arts[0])}" alt="" loading="lazy"></div>`;
+    } else {
+      cover = `<div class="folder-cover empty"><i class="ti ti-folder-filled"></i></div>`;
+    }
+
     return `<div class="folder-card" data-folder="${esc(f.id)}">
-      <div class="folder-ico"><i class="ti ti-folder-filled"></i></div>
+      ${cover}
       <div class="folder-meta">
         <div class="folder-name">${esc(f.name)}</div>
         <div class="folder-count">${n} album${n!==1?"s":""}</div>
@@ -3069,6 +3137,56 @@ audio.addEventListener("play",  () => { S.wantPlaying = true;  });
 $("ctrl-play")?.addEventListener("click", () => { S.wantPlaying = audio.paused; });
 $("mini-play")?.addEventListener("click", () => { S.wantPlaying = audio.paused; });
 
+/* ── Background-playback resilience ───────────────────────────────────
+   Honest scope: Android can pause a backgrounded browser tab's audio, and
+   no web code can fully override that — even Spotify's fix is "set battery
+   to Unrestricted". What we CAN do is (a) hold a wake lock while playing so
+   the OS is less eager to freeze us, and (b) notice when the element was
+   paused WITHOUT the user asking, and immediately resume. Together these
+   markedly reduce the stops, though they can't guarantee zero. */
+
+let _wakeLock = null;
+async function acquireWakeLock() {
+  try {
+    if ("wakeLock" in navigator && !_wakeLock && S.wantPlaying) {
+      _wakeLock = await navigator.wakeLock.request("screen");
+      _wakeLock.addEventListener("release", () => { _wakeLock = null; });
+    }
+  } catch { /* wake lock is a nice-to-have, never required */ }
+}
+function releaseWakeLock() {
+  try { _wakeLock?.release(); } catch {}
+  _wakeLock = null;
+}
+// Re-acquire after the OS drops it on tab switch, if we still want audio
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && S.wantPlaying && !audio.paused) acquireWakeLock();
+});
+audio.addEventListener("playing", acquireWakeLock);
+audio.addEventListener("pause", releaseWakeLock);
+
+/* The core auto-resume: if audio pauses but the user's intent is still
+   "playing" and no phone call / other app has taken audio focus, resume.
+   We give the OS a beat first (an intentional pause also fires this), then
+   check intent. A real user pause sets wantPlaying=false via the button
+   handlers above, so this won't fight them. */
+let _resumeGuard = 0;
+audio.addEventListener("pause", () => {
+  if (!S.wantPlaying || S.loading) return;
+  const now = Date.now();
+  if (now - _resumeGuard < 800) return;   // debounce rapid pause/play churn
+  _resumeGuard = now;
+  setTimeout(() => {
+    // Still want audio, still paused, still have a source? Resume it.
+    // A deliberate user pause set wantPlaying=false, so we won't fight it.
+    // In the background the OS may refuse play() — we try once and respect
+    // a rejection rather than looping.
+    if (S.wantPlaying && audio.paused && audio.src && !S.loading) {
+      audio.play().catch(() => {});
+    }
+  }, 500);
+});
+
 /* ── Installed vs browser tab ────────────────────────────────────────
    Running inside a Chrome tab is the cause of two things people notice:
    the media notification shows Chrome's icon (a website can't override
@@ -3246,24 +3364,164 @@ function gotoSilent(page) {
    while we're still in the foreground removes that dependency. */
 S.nextUrl = null;
 
-async function prefetchNextTrack() {
+/* ═══════════════════════════════════════════════════════════════════════
+   Look-ahead buffering — the "keep playing on a drive through a dead zone"
+   feature.
+
+   Two layers, because they solve different problems:
+
+   1. URL prefetch (S.nextUrl): resolves the NEXT track's CDN url ahead of
+      time. This removes the Termux-server dependency at the track boundary,
+      so the next song starts even while the app is backgrounded and the
+      phone has throttled the local server.
+
+   2. Audio-blob buffer (this block): actually downloads the bytes of the
+      next several tracks into the Cache API. Once cached, a song plays with
+      ZERO network — which is what carries you through a tunnel, a lift, or a
+      patchy stretch of highway. This is the real offline resilience.
+
+   We buffer a rolling window ahead of the current track. We cap it so we
+   don't gorge on mobile data or fill storage: BUFFER_AHEAD tracks, evicting
+   anything now behind us.
+═══════════════════════════════════════════════════════════════════════ */
+const AUDIO_CACHE = "naada-audio-v1";
+const BUFFER_AHEAD = 6;          // how many upcoming tracks to hold as bytes
+const BUFFER_MAX_MB = 120;       // hard ceiling on the audio cache
+
+S.nextUrl = null;
+S._buffering = new Set();        // track ids currently downloading
+
+async function _audioCache() {
+  try { return await caches.open(AUDIO_CACHE); } catch { return null; }
+}
+
+// Cache key is the track id, not the signed CDN url (which rotates), so a
+// buffered song stays findable even after its url expires.
+function _bufKey(id) { return `/buffered-audio/${id}`; }
+
+async function isBuffered(id) {
+  const c = await _audioCache();
+  if (!c) return false;
+  return !!(await c.match(_bufKey(id)));
+}
+
+async function bufferedUrl(id) {
+  const c = await _audioCache();
+  if (!c) return null;
+  const hit = await c.match(_bufKey(id));
+  if (!hit) return null;
+  try {
+    const blob = await hit.blob();
+    return URL.createObjectURL(blob);
+  } catch { return null; }
+}
+
+async function _resolveUrl(id) {
+  // prefetched url wins; else ask the server
+  if (S.nextUrl?.id === id && S.nextUrl.url) return S.nextUrl.url;
+  try {
+    const r = await fetch(`/api/song/${id}`);
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d.url || null;
+  } catch { return null; }
+}
+
+async function _downloadToBuffer(track) {
+  if (!track?.id || S._buffering.has(track.id)) return;
+  if (await isBuffered(track.id)) return;
+  S._buffering.add(track.id);
+  try {
+    const url = await _resolveUrl(track.id);
+    if (!url || !url.startsWith("http")) return;
+    // Fetch the actual audio bytes. no-cors would give an opaque response we
+    // can't replay, so we rely on the CDN's permissive CORS (same as the
+    // <audio> element already uses with crossOrigin="anonymous").
+    const resp = await fetch(url, { mode: "cors" });
+    if (!resp.ok) return;
+    const c = await _audioCache();
+    if (!c) return;
+    await c.put(_bufKey(track.id), resp.clone());
+    window.ndlog && window.ndlog(`buffered bytes: ${track.title}`);
+  } catch (e) {
+    window.ndlog && window.ndlog(`buffer failed ${track.id}: ${e.message}`);
+  } finally {
+    S._buffering.delete(track.id);
+  }
+}
+
+async function _evictBufferBehind() {
+  const c = await _audioCache();
+  if (!c) return;
+  try {
+    const keep = new Set();
+    for (let i = 0; i < BUFFER_AHEAD + 1; i++) {
+      const t = S.queue?.[S.queueIdx + i];
+      if (t?.id) keep.add(_bufKey(t.id));
+    }
+    // also keep the current track
+    if (S.track?.id) keep.add(_bufKey(S.track.id));
+    const keys = await c.keys();
+    let total = 0;
+    const sized = [];
+    for (const req of keys) {
+      const res = await c.match(req);
+      const len = Number(res?.headers.get("content-length")) || 0;
+      total += len;
+      sized.push({ req, len, keep: keep.has(new URL(req.url).pathname) });
+    }
+    // Evict anything we're no longer keeping, and trim to the size cap
+    for (const s of sized) {
+      if (!s.keep) { await c.delete(s.req); total -= s.len; }
+    }
+    // If still over cap, drop from the far end of the keep-window
+    if (total > BUFFER_MAX_MB * 1024 * 1024) {
+      for (let i = BUFFER_AHEAD; i >= 1 && total > BUFFER_MAX_MB*1024*1024; i--) {
+        const t = S.queue?.[S.queueIdx + i];
+        if (t?.id) { await c.delete(_bufKey(t.id)); }
+      }
+    }
+  } catch { /* best effort */ }
+}
+
+// The main buffering pass: resolve the immediate next url, then download a
+// rolling window of upcoming tracks as bytes.
+async function fillBuffer() {
   try {
     if (!S.queue?.length) return;
-    const nextIdx = S.shuffle ? -1 : S.queueIdx + 1;
-    const nxt = nextIdx >= 0 ? S.queue[nextIdx] : null;
-    if (!nxt || S.nextUrl?.id === nxt.id) return;
-    const r = await fetch(`/api/song/${nxt.id}`);
-    if (!r.ok) return;
-    const d = await r.json();
-    if (d.url) {
-      S.nextUrl = { id: nxt.id, url: d.url };
-      window.ndlog && window.ndlog(`prefetched next: ${nxt.title}`);
+
+    // Layer 1: url for the very next track (fast, cheap, unlocks gapless)
+    if (!S.shuffle) {
+      const nxt = S.queue[S.queueIdx + 1];
+      if (nxt && S.nextUrl?.id !== nxt.id) {
+        const url = await _resolveUrl(nxt.id);
+        if (url) S.nextUrl = { id: nxt.id, url };
+      }
     }
+
+    // Layer 2: download bytes for the look-ahead window. Skip on a metered
+    // connection the user has flagged as save-data.
+    if (navigator.connection?.saveData) return;
+
+    const window_ = [];
+    for (let i = 1; i <= BUFFER_AHEAD; i++) {
+      const t = S.queue[S.queueIdx + i];
+      if (t) window_.push(t);
+    }
+    // Download sequentially so we don't saturate the link and starve the
+    // currently-playing stream.
+    for (const t of window_) {
+      if (!(await isBuffered(t.id))) await _downloadToBuffer(t);
+    }
+    _evictBufferBehind();
   } catch { /* best effort only */ }
 }
 
-// Once a song is properly under way, quietly line up the one after it
-audio.addEventListener("playing", () => setTimeout(prefetchNextTrack, 4000));
+// Keep the old name working for any existing callers.
+const prefetchNextTrack = fillBuffer;
+
+// Once a song is properly under way, quietly line up the ones after it.
+audio.addEventListener("playing", () => setTimeout(fillBuffer, 3000));
 
 /* ── Install to home screen ──────────────────────────────────────────
    Chrome fires beforeinstallprompt only when the app is actually
@@ -3484,417 +3742,179 @@ function renderRecentSearches() {
   });
 }
 
-/* ── Sleep timer ─────────────────────────────────────────────────────
-   The logic already existed but had no way in. For a player used at
-   night this is a headline feature, not a setting. */
-function startSleepTimer(mins) {
-  clearTimeout(S.sleepTimer);
-  if (!mins) {
-    S.sleepEnd = null; S.sleepTimer = null;
-    updateSleepChip(); toast("Sleep timer off");
-    return;
-  }
-  S.sleepEnd = Date.now() + mins * 60000;
-  S.sleepTimer = setTimeout(() => {
-    // Fade out rather than cutting — waking someone with a hard stop is rude
-    const startVol = audio.volume;
-    let v = startVol;
-    const fade = setInterval(() => {
-      v -= startVol / 20;
-      if (v <= 0) {
-        clearInterval(fade);
-        audio.pause(); audio.volume = startVol;
-        S.playing = false; setPlayIcons(false); vinylPlay(false);
-        S.sleepEnd = null; updateSleepChip();
-      } else { audio.volume = Math.max(0, v); }
-    }, 250);
-  }, mins * 60000);
-  updateSleepChip();
-  toast(`Sleeping in ${mins} min`);
-}
 
-function updateSleepChip() {
-  const chip = $("sleep-chip");
-  if (!chip) return;
-  if (!S.sleepEnd) { chip.style.display = "none"; return; }
-  chip.style.display = "inline-flex";
-  const tick = () => {
-    if (!S.sleepEnd) { chip.style.display = "none"; return; }
-    const left = Math.max(0, Math.round((S.sleepEnd - Date.now()) / 60000));
-    chip.innerHTML = `<i class="ti ti-moon"></i> ${left}m`;
-  };
-  tick();
-  clearInterval(S._sleepInt);
-  S._sleepInt = setInterval(tick, 30000);
-}
 
 /* ═══════════════════════════════════════════════════════════════════════
-   v28: Radio — 45,000 free stations via Radio Browser (open source, no key)
-   Deliberately a search filter, not a fifth nav tab. Radio is a way of
-   listening, not a separate place to go, and the nav bar has earned its
-   current calm.
+   v34: Living favicon
+   The tab icon is drawn on a canvas rather than loaded from a file, for
+   two reasons. First, the app icon is built for 192px+ and its bars land
+   on sub-pixel widths at 16px, which is why the tab looked empty. Drawing
+   it ourselves lets us thicken the bars for that size specifically.
+   Second, once it's a canvas we can animate it — so the tab breathes the
+   same travelling wave as the header mark whenever music is playing.
 ═══════════════════════════════════════════════════════════════════════ */
+(function livingFavicon() {
+  const N = 32;                       // 2x the 16px slot, for retina tabs
+  let canvas, ctx, link, timer = null, phase = 0;
 
-async function searchRadio(q) {
-  const res = $("search-results");
-  res.innerHTML = `<div class="load-row"><span class="spinner"></span> Finding stations…</div>`;
-  try {
-    const url = `/api/radio/search?q=${encodeURIComponent(q || "")}&lang=${encodeURIComponent(S.homeLang || "hindi")}`;
-    const r = await fetch(url);
-    const d = await r.json();
-    const st = d.stations || [];
-    if (!st.length) {
-      res.innerHTML = `<div class="state-msg"><i class="ti ti-radio"></i><p>${
-        d.error === "radio_unavailable"
-          ? "Radio directory unreachable.<br>Check your connection and try again."
-          : "No stations found.<br>Try an artist, genre or city."
-      }</p></div>`;
-      return;
-    }
-    res.innerHTML = st.map(s =>
-      `<div class="track radio-row" data-id="${esc(s.id)}">
-         <div class="t-img">${s.image
-            ? `<img src="${esc(s.image)}" alt="" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'t-img-ph',textContent:'📻'}))">`
-            : '<span class="t-img-ph">📻</span>'}</div>
-         <div class="t-info">
-           <div class="t-title">${esc(s.title)}</div>
-           <div class="t-meta">${esc(s.artist)}${s.tags ? " · " + esc(s.tags.split(",")[0]) : ""}</div>
-         </div>
-         <div class="t-right"><span class="live-dot" title="Live"></span></div>
-       </div>`).join("");
+  // Same five bars as the header mark, proportionally thicker so each one
+  // still covers a whole pixel after the browser shrinks it to 16px.
+  const BARS = [
+    { x: 13.5, w: 5.0, h: 22, a: 1.00 },   // centre
+    { x:  6.6, w: 4.6, h: 14, a: 0.88 },
+    { x: 21.0, w: 4.6, h: 14, a: 0.88 },
+    { x:  1.0, w: 4.2, h:  8, a: 0.60 },
+    { x: 26.8, w: 4.2, h:  8, a: 0.60 },
+  ];
+  // Phase offsets reproduce the header's travelling ripple rather than
+  // making all five bars pulse together.
+  const DELAY = [0, 0.12, 0.24, 0.36, 0.48];
 
-    _listRegistry.set(res, st);
-    res.querySelectorAll(".radio-row").forEach(row =>
-      row.addEventListener("click", () => {
-        const s = st.find(x => x.id === row.dataset.id);
-        if (s) playRadio(s);
-      }));
-  } catch {
-    res.innerHTML = `<div class="state-msg"><i class="ti ti-radio"></i><p>Couldn't reach the radio directory.</p></div>`;
+  function roundRect(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y,     x + w, y + h, r);
+    c.arcTo(x + w, y + h, x,     y + h, r);
+    c.arcTo(x,     y + h, x,     y,     r);
+    c.arcTo(x,     y,     x + w, y,     r);
+    c.closePath();
   }
-}
 
-/* Radio streams straight from the station — no /api/song lookup, no
-   duration, and next/prev make no sense on a live feed. */
-function playRadio(s) {
-  S.track = s;
-  S.queue = [s]; S.queueIdx = 0;
-  S.wantPlaying = true;
-  S.nextUrl = null;
-  audio.src = s.url;
-  audio.play().catch(() => toast("Station wouldn't start — try another"));
-  updateMeta(s);
-  const mini = $("mini-player"); if (mini) mini.classList.add("active");
-  S.playing = true; setPlayIcons(true); vinylPlay(true);
-  applyRadioMode(true);   // set now, not on 'playing' — a dead stream would
-                          // otherwise leave a seek bar that does nothing
-  toast(`📻 ${s.title}`);
-  // Let the directory know, so good stations rise for everyone
-  const uuid = s.id.replace(/^radio:/, "");
-  fetch(`/api/radio/click/${encodeURIComponent(uuid)}`, { method: "POST" }).catch(() => {});
-}
+  function draw(t) {
+    ctx.clearRect(0, 0, N, N);
 
-/* Radio has no track list, so hide the controls that would lie */
-function applyRadioMode(on) {
-  document.body.classList.toggle("radio-mode", !!on);
-}
+    // Brand gradient plate
+    const g = ctx.createLinearGradient(0, 0, N, N);
+    g.addColorStop(0, "#4A1A6B");
+    g.addColorStop(1, "#1A0A3B");
+    roundRect(ctx, 0, 0, N, N, 7);
+    ctx.fillStyle = g;
+    ctx.fill();
 
-/* ── Hook Radio into the existing search chips ───────────────────────── */
-(function initRadioSearch() {
-  const origDo = window.doSearch;
-  window.doSearch = function (q) {
-    if (S.sType === "radio") { addRecentSearch(q); return searchRadio(q); }
-    if (q) addRecentSearch(q);
-    return origDo ? origDo.apply(this, arguments) : undefined;
-  };
-
-  document.querySelectorAll(".s-chip").forEach(chip => {
-    chip.addEventListener("click", () => {
-      if (chip.dataset.stype !== "radio") return;
-      const res = $("search-results");
-      // Empty query on the Radio chip = popular stations in your language,
-      // which is a far better cold start than a blank panel.
-      searchRadio(S.searchQ || "");
-      if (res) res.scrollTop = 0;
+    BARS.forEach((b, i) => {
+      // Resting: full height. Playing: scale between .5 and 1, offset per
+      // bar — the same shape as the header's wbPlay keyframes.
+      let scale = 1, alpha = b.a;
+      if (t !== null) {
+        const p = (t - DELAY[i]) % 1;
+        const s = Math.sin(((p < 0 ? p + 1 : p)) * Math.PI * 2 - Math.PI / 2);
+        scale = 0.5 + 0.25 * (s + 1);          // .5 → 1
+        alpha = b.a * (0.7 + 0.15 * (s + 1));
+      }
+      const h = b.h * scale;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = "#fff";
+      roundRect(ctx, b.x, (N - h) / 2, b.w, h, b.w / 2);
+      ctx.fill();
     });
-  });
+    ctx.globalAlpha = 1;
+
+    link.href = canvas.toDataURL("image/png");
+  }
+
+  function ensure() {
+    if (canvas) return true;
+    try {
+      canvas = document.createElement("canvas");
+      canvas.width = canvas.height = N;
+      ctx = canvas.getContext("2d");
+      if (!ctx) return false;
+
+      // Prove the canvas can actually produce a data URL BEFORE touching the
+      // static links. On some privacy settings toDataURL throws; if we'd
+      // already removed the file-based icons the tab would go blank — which
+      // is exactly the "favicon won't show" failure. So: build our own link,
+      // draw once, and only if that yields a real data URL do we retire the
+      // static links. Otherwise we bail and the static PNGs keep the tab.
+      const test = document.createElement("canvas");
+      test.width = test.height = N;
+      const tctx = test.getContext("2d");
+      tctx.fillRect(0, 0, 2, 2);
+      const probe = test.toDataURL("image/png");
+      if (!probe || probe.length < 64) return false;   // canvas export blocked
+
+      link = document.createElement("link");
+      link.rel = "icon";
+      link.type = "image/png";
+      document.head.appendChild(link);
+
+      // Draw the first real frame into our link, THEN remove the old links.
+      draw(null);
+      if (!link.href || link.href.length < 64) {        // draw didn't take
+        link.remove(); link = null; canvas = null; ctx = null;
+        return false;
+      }
+      document.querySelectorAll('link[rel~="icon"]').forEach(l => {
+        if (l !== link) l.remove();
+      });
+      return true;
+    } catch {
+      // Anything went wrong: make sure the static links remain untouched.
+      if (link) { try { link.remove(); } catch {} link = null; }
+      canvas = null; ctx = null;
+      return false;
+    }
+  }
+
+  function stop() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if (canvas) draw(null);           // settle to the resting mark
+  }
+
+  function start() {
+    if (timer) return;
+    // 8fps is plenty for a 16px icon and costs almost nothing. Browsers
+    // throttle background tabs to ~1Hz anyway, which just slows the wave.
+    timer = setInterval(() => { phase = (phase + 0.09) % 1; draw(phase); }, 125);
+  }
+
+  if (!ensure()) return;               // no canvas: the PNG links stand
+
+  // Someone who asked the OS for less motion should not get a wiggling tab
+  const calm = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const sync = () => {
+    const playing = !audio.paused && !!audio.src;
+    if (playing && !calm.matches) start(); else stop();
+  };
+
+  draw(null);
+  audio.addEventListener("play",  sync);
+  audio.addEventListener("pause", sync);
+  audio.addEventListener("ended", sync);
+  calm.addEventListener?.("change", sync);
+  window.addEventListener("pagehide", stop);
+  sync();
 })();
 
-/* ── Sleep timer UI ──────────────────────────────────────────────────── */
-(function initSleepUI() {
-  const btn = $("sleep-btn");
+/* ── Back-to-top ──────────────────────────────────────────────────────
+   Each .page scrolls independently, so we watch whichever page is active
+   and show the button once it's scrolled past a screenful. Tapping it
+   smooth-scrolls that page back to the top. */
+(function backToTop() {
+  const btn = $("to-top");
   if (!btn) return;
+
+  function activePage() {
+    return document.querySelector(".page.active");
+  }
+
+  function onScroll(e) {
+    const pg = e.target;
+    if (!pg.classList?.contains("page") || !pg.classList.contains("active")) return;
+    btn.classList.toggle("show", pg.scrollTop > pg.clientHeight * 0.8);
+  }
+
+  // Listen on the container so we catch scrolls from any page (capture,
+  // because scroll doesn't bubble).
+  document.addEventListener("scroll", onScroll, true);
+
   btn.addEventListener("click", () => {
-    const sheet = $("sleep-sheet");
-    if (sheet) sheet.classList.add("open");
+    const pg = activePage();
+    if (pg) pg.scrollTo({ top: 0, behavior: "smooth" });
+    btn.classList.remove("show");
   });
-  document.querySelectorAll("[data-sleep]").forEach(el =>
-    el.addEventListener("click", () => {
-      startSleepTimer(parseInt(el.dataset.sleep) || 0);
-      $("sleep-sheet")?.classList.remove("open");
-    }));
-  $("sleep-close")?.addEventListener("click", () => $("sleep-sheet")?.classList.remove("open"));
-})();
 
-/* ── Boot the productivity bits ──────────────────────────────────────── */
-(function bootV28() {
-  try { restoreResume(); } catch {}
-  try { renderRecentSearches(); } catch {}
-  // Count a play once it's actually under way, not on every skip
-  audio.addEventListener("playing", () => {
-    if (S.track && !S.track.is_radio) bumpPlayCount(S.track);
-  });
-  audio.addEventListener("playing", () => applyRadioMode(!!S.track?.is_radio));
-})();
-
-/* ═══════════════════════════════════════════════════════════════════════
-   v29: Podcasts
-   A podcast is not a long song. Different data shape (show -> episode),
-   different playback (speed, skip 30s, resume ALWAYS), and shuffle/repeat
-   are meaningless. So it gets its own model rather than being forced
-   through the music one — but it reuses the same player, queue and
-   mini-player so there's nothing new to learn.
-═══════════════════════════════════════════════════════════════════════ */
-
-S.podSubs  = LS.get("nd_pod_subs", []);      // followed shows
-S.epProg   = LS.get("nd_ep_progress", {});   // per-episode position + played
-S.podShow  = null;                            // show open in the sheet
-S.speed    = LS.get("nd_speed", 1);
-
-function savePodSubs() { LS.set("nd_pod_subs", S.podSubs); }
-function saveEpProg()  { LS.set("nd_ep_progress", S.epProg); }
-
-/* ── Discovery ───────────────────────────────────────────────────────── */
-async function searchPodcasts(q) {
-  const box = $("pod-results");
-  if (!q) { box.innerHTML = ""; renderPodSubs(); return; }
-  box.innerHTML = `<div class="load-row"><span class="spinner"></span> Searching shows…</div>`;
-  try {
-    const r = await fetch(`/api/podcast/search?q=${encodeURIComponent(q)}`);
-    const d = await r.json();
-    const shows = d.shows || [];
-    if (!shows.length) {
-      box.innerHTML = `<div class="state-msg"><i class="ti ti-microphone-2"></i><p>${
-        d.error ? "Podcast directory unreachable." : "No shows found."}</p></div>`;
-      return;
-    }
-    box.innerHTML = `<div class="sec-hdr"><span class="sec-title">Shows</span></div>` +
-      shows.map(sh =>
-      `<div class="pod-row" data-pid="${esc(sh.id)}">
-         <div class="pod-art">${sh.image ? `<img src="${esc(sh.image)}" alt="" loading="lazy">` : "🎙️"}</div>
-         <div class="pod-meta">
-           <div class="pod-name">${esc(sh.title)}</div>
-           <div class="pod-by">${esc(sh.author)}</div>
-           <div class="pod-tag">${esc(sh.genre)}${sh.episodes ? ` · ${sh.episodes} episodes` : ""}</div>
-         </div>
-       </div>`).join("");
-    _listRegistry.set(box, shows);
-    box.querySelectorAll(".pod-row").forEach(row =>
-      row.addEventListener("click", () => {
-        const sh = shows.find(x => x.id === row.dataset.pid);
-        if (sh) openShow(sh);
-      }));
-  } catch {
-    box.innerHTML = `<div class="state-msg"><i class="ti ti-microphone-2"></i><p>Search failed.</p></div>`;
-  }
-}
-
-/* ── Show detail + episodes ──────────────────────────────────────────── */
-async function openShow(sh) {
-  S.podShow = sh;
-  $("pod-show-title").textContent = sh.title;
-  $("pod-show-head").innerHTML =
-    `<div class="pod-head-art">${sh.image ? `<img src="${esc(sh.image)}" alt="">` : "🎙️"}</div>
-     <div class="pod-head-meta">
-       <div class="pod-head-title">${esc(sh.title)}</div>
-       <div class="pod-head-by">${esc(sh.author || "")}</div>
-     </div>`;
-  updateFollowBtn();
-  $("pod-show-sheet").classList.add("open");
-
-  const list = $("pod-ep-list");
-  list.innerHTML = `<div class="load-row"><span class="spinner"></span> Loading episodes…</div>`;
-  try {
-    const r = await fetch(`/api/podcast/episodes?feed=${encodeURIComponent(sh.feed)}`);
-    const d = await r.json();
-    const eps = d.episodes || [];
-    if (!eps.length) {
-      list.innerHTML = `<div class="state-msg"><i class="ti ti-rss"></i><p>Couldn't read this feed.</p></div>`;
-      return;
-    }
-    S.podEpisodes = eps;
-    renderEpisodes(eps);
-  } catch {
-    list.innerHTML = `<div class="state-msg"><i class="ti ti-rss"></i><p>Couldn't reach the feed.</p></div>`;
-  }
-}
-
-function renderEpisodes(eps) {
-  const list = $("pod-ep-list");
-  list.innerHTML = eps.map(e => {
-    const p = S.epProg[e.id];
-    const pct = p && e.duration ? Math.min(100, Math.round((p.at / e.duration) * 100)) : 0;
-    const done = p?.played;
-    return `<div class="ep-row${done ? " done" : ""}" data-eid="${esc(e.id)}">
-      <div class="ep-main">
-        <div class="ep-title">${done ? '<i class="ti ti-circle-check"></i> ' : ""}${esc(e.title)}</div>
-        <div class="ep-sub">${esc(e.date || "")}${e.duration ? ` · ${fmt(e.duration)}` : ""}${
-          p && !done && p.at > 30 ? ` · ${fmt(p.at)} in` : ""}</div>
-        ${pct > 2 && !done ? `<div class="ep-bar"><span style="width:${pct}%"></span></div>` : ""}
-      </div>
-      <button class="ep-play" aria-label="Play"><i class="ti ti-player-play-filled"></i></button>
-    </div>`;
-  }).join("");
-  list.querySelectorAll(".ep-row").forEach(row =>
-    row.addEventListener("click", () => {
-      const e = eps.find(x => x.id === row.dataset.eid);
-      if (e) playEpisode(e, eps);
-    }));
-}
-
-/* ── Playback ────────────────────────────────────────────────────────
-   Episodes always resume. Nobody restarts a 90-minute interview from
-   zero because they closed the app. */
-function playEpisode(ep, list) {
-  S.track = ep;
-  S.queue = list || [ep];
-  S.queueIdx = S.queue.findIndex(x => x.id === ep.id);
-  S.wantPlaying = true;
-  S.nextUrl = null;
-
-  const p = S.epProg[ep.id];
-  S.resumeAt = p && !p.played && p.at > 20 ? p.at : 0;
-
-  audio.src = ep.url;
-  audio.playbackRate = S.speed;
-  audio.play().catch(() => toast("Episode wouldn't start"));
-  updateMeta(ep);
-  const mini = $("mini-player"); if (mini) mini.classList.add("active");
-  S.playing = true; setPlayIcons(true); vinylPlay(true);
-  applyPodcastMode(true);
-  if (S.resumeAt) toast(`Resuming at ${fmt(S.resumeAt)}`);
-}
-
-function applyPodcastMode(on) {
-  document.body.classList.toggle("podcast-mode", !!on);
-}
-
-/* Track per-episode progress, and mark finished near the end */
-let _epTick = 0;
-audio.addEventListener("timeupdate", () => {
-  const t = S.track;
-  if (!t?.is_podcast) return;
-  const now = Date.now();
-  if (now - _epTick < 5000) return;
-  _epTick = now;
-  const at = Math.floor(audio.currentTime || 0);
-  const dur = audio.duration || t.duration || 0;
-  const played = dur > 0 && at > dur - 45;      // credits count as finished
-  S.epProg[t.id] = { at: played ? 0 : at, played, when: Date.now() };
-  saveEpProg();
-});
-
-/* ── Follow / unfollow ───────────────────────────────────────────────── */
-function isFollowing(id) { return S.podSubs.some(s => s.id === id); }
-
-function updateFollowBtn() {
-  const btn = $("pod-follow");
-  if (!btn || !S.podShow) return;
-  const on = isFollowing(S.podShow.id);
-  btn.innerHTML = `<i class="ti ti-${on ? "check" : "plus"}"></i>`;
-  btn.classList.toggle("following", on);
-  btn.setAttribute("aria-label", on ? "Unfollow" : "Follow");
-}
-
-$("pod-follow")?.addEventListener("click", () => {
-  if (!S.podShow) return;
-  if (isFollowing(S.podShow.id)) {
-    S.podSubs = S.podSubs.filter(s => s.id !== S.podShow.id);
-    toast("Unfollowed");
-  } else {
-    S.podSubs = [{ ...S.podShow }, ...S.podSubs].slice(0, 60);
-    toast(`Following "${S.podShow.title}"`);
-  }
-  savePodSubs(); updateFollowBtn(); renderPodSubs();
-});
-
-function renderPodSubs() {
-  const row = $("pod-subs"), hdr = $("pod-subs-hdr");
-  if (!row) return;
-  if (!S.podSubs.length) { row.innerHTML = ""; if (hdr) hdr.style.display = "none"; return; }
-  if (hdr) hdr.style.display = "flex";
-  row.innerHTML = S.podSubs.map(sh =>
-    `<div class="mini-card" data-pid="${esc(sh.id)}">
-       <div class="mini-card-img">${sh.image ? `<img src="${esc(sh.image)}" alt="">` : "🎙️"}</div>
-       <div class="mini-card-title">${esc(sh.title)}</div>
-       <div class="mini-card-sub">${esc(sh.author || "")}</div>
-     </div>`).join("");
-  row.querySelectorAll(".mini-card[data-pid]").forEach(el =>
-    el.addEventListener("click", () => {
-      const sh = S.podSubs.find(x => x.id === el.dataset.pid);
-      if (sh) openShow(sh);
-    }));
-}
-
-/* ── Speed + skip, the two controls podcasts actually need ───────────── */
-const SPEEDS = [1, 1.25, 1.5, 1.75, 2];
-
-$("speed-btn")?.addEventListener("click", () => {
-  const i = SPEEDS.indexOf(S.speed);
-  S.speed = SPEEDS[(i + 1) % SPEEDS.length];
-  audio.playbackRate = S.speed;
-  LS.set("nd_speed", S.speed);
-  $("speed-btn").textContent = `${S.speed}×`;
-  toast(`Speed ${S.speed}×`);
-});
-
-function skipBy(secs) {
-  if (!audio.duration) return;
-  audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + secs));
-}
-
-/* In podcast mode the prev/next buttons become skip back / skip forward,
-   because jumping between 90-minute episodes is almost never what you
-   want mid-listen, and missing 30 seconds is. */
-$("ctrl-prev")?.addEventListener("click", e => {
-  if (!S.track?.is_podcast) return;
-  e.stopImmediatePropagation(); skipBy(-30);
-}, true);
-$("ctrl-next")?.addEventListener("click", e => {
-  if (!S.track?.is_podcast) return;
-  e.stopImmediatePropagation(); skipBy(30);
-}, true);
-
-/* ── Page wiring ─────────────────────────────────────────────────────── */
-(function initPodcasts() {
-  const inp = $("pod-input"), clr = $("pod-clear");
-  let t;
-  inp?.addEventListener("input", e => {
-    const q = e.target.value.trim();
-    clr?.classList.toggle("vis", !!q);
-    clearTimeout(t);
-    t = setTimeout(() => searchPodcasts(q), 450);
-  });
-  clr?.addEventListener("click", () => {
-    inp.value = ""; clr.classList.remove("vis");
-    searchPodcasts(""); inp.focus();
-  });
-  $("pod-show-close")?.addEventListener("click", () =>
-    $("pod-show-sheet").classList.remove("open"));
-
-  // Trivia moved out of the nav and into Library
-  $("open-trivia")?.addEventListener("click", () => goto("trivia"));
-  $("trivia-back")?.addEventListener("click", () => goto("library"));
-
-  renderPodSubs();
-  if (S.speed !== 1) {
-    audio.playbackRate = S.speed;
-    const sb = $("speed-btn"); if (sb) sb.textContent = `${S.speed}×`;
-  }
-  // Music never inherits a podcast speed setting
-  audio.addEventListener("playing", () => {
-    const pod = !!S.track?.is_podcast;
-    applyPodcastMode(pod);
-    audio.playbackRate = pod ? S.speed : 1;
-  });
+  // Hide it on tab change until the new page is scrolled again
+  document.querySelectorAll(".nav-item").forEach(n =>
+    n.addEventListener("click", () => btn.classList.remove("show")));
 })();
