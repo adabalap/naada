@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v38";
+const APP_VERSION = "v40";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -567,11 +567,15 @@ async function play(track, queue=S.queue, idx=-1) {
       streamUrl = S.nextUrl.url;
       S.nextUrl = null;
     } else {
-      window.ndlog && window.ndlog(`fetching /api/song/${track.id}`);
-      const r = await fetch(`/api/song/${track.id}`);
-      d = await r.json();
-      window.ndlog && window.ndlog(`got response: url=${(d.url||"").slice(0,40)}`);
-      streamUrl = d.url || "";
+      // Resolve through the cache-first helper: this checks the deep URL
+      // cache (populated while awake) before falling back to the server.
+      // During sleep the cache almost always hits, so we don't depend on
+      // the frozen Termux process to advance the queue.
+      const cached = cachedUrl(track.id);
+      window.ndlog && window.ndlog(cached ? `url from cache: ${track.id}` : `fetching /api/song/${track.id}`);
+      streamUrl = await _resolveUrl(track.id);
+      d = { url: streamUrl };
+      window.ndlog && window.ndlog(`got url=${(streamUrl||"").slice(0,40)}`);
     }
 
     // Validate — a blob: URL from the buffer is always fine; otherwise it
@@ -3237,7 +3241,7 @@ function renderInstallState() {
       <div class="fix-h"><i class="ti ti-tool"></i> The fix — switch to plain HTTP</div>
       <p class="about-p">Chrome refuses to install any app served over HTTPS with
       a certificate you had to click past. But <b>http://localhost is trusted by
-      Chrome automatically</b>, no certificate needed. In Termux:</p>
+      Chrome automatically</b>, no certificate needed. On your server:</p>
       <pre class="fix-code">./naada.sh stop
 NAADA_HTTP_ONLY=1 ./naada.sh start</pre>
       <p class="about-p">Then open <b>http://localhost:5000</b> and the Install
@@ -3358,10 +3362,11 @@ function gotoSilent(page) {
 
 /* ── Prefetch the next track's stream URL ────────────────────────────
    The audio itself streams from the CDN, but the URL for each song comes
-   from the Termux server. If the phone backgrounds the app and Android
-   throttles Termux, that lookup can fail exactly at a track change — the
-   music stops between songs rather than mid-song. Fetching the next URL
-   while we're still in the foreground removes that dependency. */
+   from our Flask server. The server now runs on an always-on cloud VM
+   (OCI), so the old "frozen Termux between tracks" failure is gone — but
+   prefetching is still worth it: it cuts latency at the track boundary to
+   near zero and reduces load on the free-tier VM. The deep byte buffer
+   below additionally lets songs play with no network at all. */
 S.nextUrl = null;
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -3371,9 +3376,8 @@ S.nextUrl = null;
    Two layers, because they solve different problems:
 
    1. URL prefetch (S.nextUrl): resolves the NEXT track's CDN url ahead of
-      time. This removes the Termux-server dependency at the track boundary,
-      so the next song starts even while the app is backgrounded and the
-      phone has throttled the local server.
+      time. Cuts track-boundary latency to near zero; also means a brief
+      network blip at a song change doesn't stall playback.
 
    2. Audio-blob buffer (this block): actually downloads the bytes of the
       next several tracks into the Cache API. Once cached, a song plays with
@@ -3416,14 +3420,39 @@ async function bufferedUrl(id) {
   } catch { return null; }
 }
 
+/* A map of pre-resolved stream URLs: id -> { url, at }. This is the piece
+   that fixes the "plays 2-3 songs then stops when the phone sleeps" bug.
+   The old design cached only ONE next URL, so after that single track the
+   player called back to the Termux server — which Android has frozen during
+   sleep — and playback died. Now we resolve a deep window of URLs while the
+   app is awake, so the queue can advance through many tracks touching no
+   server at all. URLs are cached longer than the byte buffer because a URL
+   is tiny; only the bytes are storage-heavy. */
+S.urlCache = S.urlCache || {};
+const URL_AHEAD = 20;             // how many upcoming stream URLs to hold
+const URL_TTL = 30 * 60 * 1000;   // JioSaavn signed URLs are good for a while
+
+function cachedUrl(id) {
+  const e = S.urlCache[id];
+  if (e && Date.now() - e.at < URL_TTL) return e.url;
+  return null;
+}
+
 async function _resolveUrl(id) {
-  // prefetched url wins; else ask the server
+  // 1. A URL we already resolved and cached — no network at all.
+  const hit = cachedUrl(id);
+  if (hit) return hit;
+  // 2. The legacy single-slot, kept for compatibility.
   if (S.nextUrl?.id === id && S.nextUrl.url) return S.nextUrl.url;
+  // 3. Last resort: ask the server. This is the ONLY path that needs Termux
+  //    alive, and the whole point of the deep cache is to almost never reach
+  //    it while backgrounded.
   try {
     const r = await fetch(`/api/song/${id}`);
     if (!r.ok) return null;
     const d = await r.json();
-    return d.url || null;
+    if (d.url) { S.urlCache[id] = { url: d.url, at: Date.now() }; return d.url; }
+    return null;
   } catch { return null; }
 }
 
@@ -3484,37 +3513,54 @@ async function _evictBufferBehind() {
   } catch { /* best effort */ }
 }
 
-// The main buffering pass: resolve the immediate next url, then download a
-// rolling window of upcoming tracks as bytes.
+// The main buffering pass. Two windows of different depths:
+//   • URLs  — deep (URL_AHEAD). Tiny, so we resolve far ahead. This is what
+//             lets the queue keep advancing when the server is asleep.
+//   • bytes — shallow (BUFFER_AHEAD). Heavy, so a tighter window. This is
+//             what lets a song play with NO network at all (tunnel/dead zone).
 async function fillBuffer() {
   try {
-    if (!S.queue?.length) return;
+    if (!S.queue?.length || S.shuffle) {
+      // Shuffle picks randomly, so look-ahead can't know what's next; just
+      // make sure the immediate next-in-array URL exists as a cheap hedge.
+      const nxt = S.queue?.[S.queueIdx + 1];
+      if (nxt) { const u = await _resolveUrl(nxt.id); if (u) S.nextUrl = { id: nxt.id, url: u }; }
+      return;
+    }
 
-    // Layer 1: url for the very next track (fast, cheap, unlocks gapless)
-    if (!S.shuffle) {
-      const nxt = S.queue[S.queueIdx + 1];
-      if (nxt && S.nextUrl?.id !== nxt.id) {
-        const url = await _resolveUrl(nxt.id);
-        if (url) S.nextUrl = { id: nxt.id, url };
+    // Deep URL window — resolve up to URL_AHEAD upcoming tracks' URLs.
+    for (let i = 1; i <= URL_AHEAD; i++) {
+      const t = S.queue[S.queueIdx + i];
+      if (!t) break;
+      if (!cachedUrl(t.id)) {
+        const u = await _resolveUrl(t.id);
+        if (u && i === 1) S.nextUrl = { id: t.id, url: u };  // keep legacy slot warm
       }
     }
+    // Prune URL cache entries for tracks no longer near the play head.
+    _pruneUrlCache();
 
-    // Layer 2: download bytes for the look-ahead window. Skip on a metered
-    // connection the user has flagged as save-data.
+    // Shallow byte window — skip if the user asked the OS to save data.
     if (navigator.connection?.saveData) return;
-
-    const window_ = [];
     for (let i = 1; i <= BUFFER_AHEAD; i++) {
       const t = S.queue[S.queueIdx + i];
-      if (t) window_.push(t);
-    }
-    // Download sequentially so we don't saturate the link and starve the
-    // currently-playing stream.
-    for (const t of window_) {
+      if (!t) break;
       if (!(await isBuffered(t.id))) await _downloadToBuffer(t);
     }
     _evictBufferBehind();
   } catch { /* best effort only */ }
+}
+
+function _pruneUrlCache() {
+  const keep = new Set();
+  for (let i = -1; i <= URL_AHEAD; i++) {
+    const t = S.queue?.[S.queueIdx + i];
+    if (t?.id) keep.add(t.id);
+  }
+  const now = Date.now();
+  for (const id of Object.keys(S.urlCache)) {
+    if (!keep.has(id) || now - S.urlCache[id].at > URL_TTL) delete S.urlCache[id];
+  }
 }
 
 // Keep the old name working for any existing callers.

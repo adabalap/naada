@@ -117,14 +117,24 @@ case "${1:-start}" in
     export NAADA_HTTP_ONLY=1
     cmd_start
     ;;
-  # Behind Cloudflare (tunnel or proxy). Cloudflare terminates TLS with a
-  # real certificate, so this app must serve plain HTTP and must NOT try to
-  # do its own TLS -- two TLS layers is how you get handshake errors.
-  # ProxyFix is enabled so X-Forwarded-Proto/For are trusted.
-  # Set NAADA_TOKEN first if you don't want the whole internet using it.
+  # Behind Cloudflare on a real server (OCI, VPS, etc). Cloudflare terminates
+  # TLS with a real certificate, so this app serves plain HTTP and must NOT do
+  # its own TLS -- two TLS layers is how you get handshake errors. ProxyFix is
+  # enabled so X-Forwarded-Proto/For are trusted (real client IP, correct
+  # https scheme in redirects/cookies).
+  #
+  # Binding: defaults to 0.0.0.0 so Cloudflare's edge can reach the origin
+  # over the OCI public IP. If you use a Cloudflare TUNNEL (cloudflared runs
+  # on the box and dials out), you can lock this down with:
+  #     NAADA_HOST=127.0.0.1 ./naada.sh start-cloud
+  # so nothing is exposed on the public interface at all.
+  #
+  # Security: the app is now on the public internet. Set NAADA_TOKEN to gate
+  # access, or rely on Cloudflare Access in front. See start-cloud help.
   start-cloud)
     export NAADA_HTTP_ONLY=1
     export NAADA_BEHIND_PROXY=1
+    export NAADA_HOST="${NAADA_HOST:-0.0.0.0}"
     cmd_start
     ;;
   stop)    cmd_stop ;;

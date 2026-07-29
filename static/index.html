@@ -55,11 +55,11 @@
        app.js MAY later swap in an animated canvas version, but only if
        that genuinely succeeds — these static links always remain as the
        floor, so the tab is never blank. -->
-  <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png?v=38">
-  <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png?v=38">
-  <link rel="icon" type="image/png" sizes="48x48" href="/static/icons/favicon-48.png?v=38">
-  <link rel="shortcut icon" href="/static/icons/favicon.ico?v=38">
-  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png?v=38">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png?v=40">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png?v=40">
+  <link rel="icon" type="image/png" sizes="48x48" href="/static/icons/favicon-48.png?v=40">
+  <link rel="shortcut icon" href="/static/icons/favicon.ico?v=40">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png?v=40">
   <script>
   /* Resolve theme before first paint to avoid a flash. "auto" follows the OS. */
   (function () {
@@ -73,7 +73,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=38">
+  <link rel="stylesheet" href="/static/app.css?v=40">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
 </head>
 <body>
@@ -614,7 +614,8 @@
 
     <div class="about-block">
       <div class="about-block-h"><i class="ti ti-cpu"></i> Under the hood</div>
-      <p class="about-p">Vanilla JS PWA + a lightweight Flask service on Termux.
+      <p class="about-p">Vanilla JS PWA + a lightweight Flask service on an
+      always-on cloud server (OCI), behind Cloudflare for HTTPS.
       DES-ECB stream decryption, multi-source lyrics, Gemini Flash AI with model
       fallback, rotating logs, and graceful degradation throughout.</p>
     </div>
@@ -761,6 +762,6 @@
 <!-- ── Toast ──────────────────────────────────────────────────────────── -->
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=38"></script>
+<script src="/static/app.js?v=40"></script>
 </body>
 </html>

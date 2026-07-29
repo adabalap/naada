@@ -1152,6 +1152,15 @@ def _cache_policy(resp):
         resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     elif p.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
+
+    # Baseline security headers — the app is on the public internet now (OCI
+    # behind Cloudflare), so these are worth setting. HSTS is deliberately
+    # left to Cloudflare, which owns TLS termination and can apply it edge-
+    # wide without risking a self-inflicted lockout from the origin.
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "SAMEORIGIN"        # block clickjacking
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
     return resp
 
 
