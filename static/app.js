@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v40";
+const APP_VERSION = "v41";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -813,11 +813,112 @@ audio.addEventListener("timeupdate", () => {
 audio.addEventListener("loadedmetadata", updateMediaPositionState);
 setInterval(() => { if (!audio.paused) updateMediaPositionState(); }, 1000);
 
+/* ═══════════════════════════════════════════════════════════════════════
+   Armed next track — the thing that actually keeps a queue playing when
+   the app is minimised or the screen is off.
+
+   The old chain was: song ends -> playNext() -> play() -> await a URL ->
+   set src -> download and buffer over the network -> finally sound. Every
+   track boundary therefore had a silent gap of unpredictable length, and
+   two bad things happened in it:
+
+     1. A backgrounded tab's network requests can be throttled or deferred
+        indefinitely, so the buffering step may simply never finish.
+     2. While silent, Chrome no longer sees the tab as "playing audio",
+        which is precisely what makes it eligible to be frozen.
+
+   So we now ARM the next track while the current one is still playing:
+   resolve its source ahead of time (a blob from our byte buffer if we
+   have it, else a CDN url warmed into the HTTP cache via a standby
+   element). When `ended` fires we set src and call play() SYNCHRONOUSLY —
+   no await, no fetch, no gap. The tab keeps producing audio continuously,
+   which is both what the user wants and what keeps Chrome from freezing us.
+═══════════════════════════════════════════════════════════════════════ */
+const standby = new Audio();          // warms the HTTP cache only; never audible
+standby.preload = "auto";
+standby.volume  = 0;
+S.armed = null;                       // { id, src, isBlob }
+
+function nextTrackInQueue() {
+  if (!S.queue?.length) return null;
+  if (S.shuffle) return null;                       // random: can't know next
+  const i = S.queueIdx + 1;
+  if (i < S.queue.length) return S.queue[i];
+  if (S.repeat === "all") return S.queue[0];        // wrap around
+  return null;
+}
+
+async function armNext() {
+  try {
+    if (S.repeat === "one") { S.armed = null; return; }
+    const nxt = nextTrackInQueue();
+    if (!nxt) { S.armed = null; return; }
+    // Already armed for this exact track, and the source is still fresh?
+    // (Signed CDN urls expire, so an old arm must be rebuilt.)
+    if (S.armed?.id === nxt.id && Date.now() - (S.armed.at || 0) < URL_TTL) return;
+
+    // Prefer bytes we already hold: a blob plays with literally no network.
+    let src = await bufferedUrl(nxt.id);
+    const isBlob = !!src;
+    if (!src) src = await _resolveUrl(nxt.id);
+    if (!src) return;
+
+    // Only warm the standby element when the byte buffer missed — otherwise
+    // we'd download the same song twice and waste mobile data.
+    if (!isBlob) {
+      try { standby.src = src; standby.load(); } catch {}
+    }
+    S.armed = { id: nxt.id, src, isBlob, at: Date.now() };
+    window.ndlog && window.ndlog(`armed next: ${nxt.title} (${isBlob ? "bytes" : "url"})`);
+  } catch { /* arming is best-effort; the slow path still works */ }
+}
+
 audio.addEventListener("ended", () => {
   if (S.repeat === "one") { audio.currentTime = 0; audio.play(); return; }
+
+  const nxt = nextTrackInQueue();
+  if (nxt && S.armed && S.armed.id === nxt.id) {
+    // ── FAST PATH: fully synchronous, so there is no silent gap ──────────
+    const idx = (S.queueIdx + 1 < S.queue.length) ? S.queueIdx + 1 : 0;
+    const src = S.armed.src;
+    S.armed = null;
+
+    if (S._lastObjectUrl) { try { URL.revokeObjectURL(S._lastObjectUrl); } catch {} S._lastObjectUrl = null; }
+    audio.src = src;
+    if (src.startsWith("blob:")) { S._lastObjectUrl = src; audio.removeAttribute("crossorigin"); }
+    else { audio.crossOrigin = "anonymous"; }
+
+    const p = audio.play();            // called first: nothing delays the audio
+
+    // Everything below is bookkeeping and can happen after sound resumes.
+    S.track = nxt;
+    S.queueIdx = idx;
+    S.playing = true;
+    S.wantPlaying = true;
+    updateMeta(nxt);
+    setPlayIcons(true);
+    vinylPlay(true);
+    S.history = [nxt, ...S.history.filter(t => t.id !== nxt.id)].slice(0, 60);
+    save();
+    patchLists();
+
+    if (p && p.catch) p.catch(() => play(nxt, S.queue, idx));   // retry properly
+    setTimeout(armNext,   1200);
+    setTimeout(fillBuffer, 2500);
+    return;
+  }
+
+  // ── SLOW PATH: nothing armed (shuffle, or arming hadn't finished) ──────
   if (S.repeat === "all" || S.queueIdx < S.queue.length - 1) { playNext(); return; }
   S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists();
 });
+
+// Arm early enough that even a short track is ready before it ends.
+audio.addEventListener("playing", () => setTimeout(armNext, 6000));
+// Note: we deliberately do NOT clear the arm on `loadstart`. That fires on
+// our own fast-path swap and on error retries, and clearing there fought the
+// re-arm timer. armNext() already invalidates precisely — by comparing the
+// armed id against the real next track, and by age (below).
 audio.addEventListener("waiting", () => $("player-loader").classList.add("vis"));
 audio.addEventListener("canplay", () => $("player-loader").classList.remove("vis"));
 audio.addEventListener("error",   () => { _skipErrors++; toast("Stream error — skipping"); setTimeout(playNext, 900); });
@@ -3142,12 +3243,23 @@ $("ctrl-play")?.addEventListener("click", () => { S.wantPlaying = audio.paused; 
 $("mini-play")?.addEventListener("click", () => { S.wantPlaying = audio.paused; });
 
 /* ── Background-playback resilience ───────────────────────────────────
-   Honest scope: Android can pause a backgrounded browser tab's audio, and
-   no web code can fully override that — even Spotify's fix is "set battery
-   to Unrestricted". What we CAN do is (a) hold a wake lock while playing so
-   the OS is less eager to freeze us, and (b) notice when the element was
-   paused WITHOUT the user asking, and immediately resume. Together these
-   markedly reduce the stops, though they can't guarantee zero. */
+   Correction to an earlier version of this file: the Screen Wake Lock is
+   automatically RELEASED whenever the document becomes hidden, and
+   request() rejects outright if the page isn't visible. So it does nothing
+   for background playback — the earlier comment here claiming otherwise was
+   simply wrong. It is still worth holding, but for a different reason: it
+   stops the screen sleeping while you're actually looking at the player
+   (phone mounted on a dashboard, say).
+
+   The things that genuinely keep background audio alive are, in order:
+     1. Never going silent at a track boundary  -> see armNext() above.
+        A tab that continuously produces audio is far less likely to be
+        frozen than one that goes quiet every few minutes.
+     2. MediaSession metadata + playback state, so the OS treats us as a
+        real media session rather than an incidental noise-maker.
+     3. Auto-resume below, for when the OS pauses us anyway.
+     4. Installing as a PWA and setting battery to Unrestricted — still the
+        single biggest lever, and the same advice Spotify gives. */
 
 let _wakeLock = null;
 async function acquireWakeLock() {
@@ -3541,7 +3653,8 @@ async function fillBuffer() {
     _pruneUrlCache();
 
     // Shallow byte window — skip if the user asked the OS to save data.
-    if (navigator.connection?.saveData) return;
+    // Respect both the user's own setting and the OS Data Saver flag.
+    if (S.homeCfg.buffer === false || navigator.connection?.saveData) return;
     for (let i = 1; i <= BUFFER_AHEAD; i++) {
       const t = S.queue[S.queueIdx + i];
       if (!t) break;
@@ -3963,4 +4076,46 @@ function renderRecentSearches() {
   // Hide it on tab change until the new page is scrolled again
   document.querySelectorAll(".nav-item").forEach(n =>
     n.addEventListener("click", () => btn.classList.remove("show")));
+})();
+
+/* ── Haptics + offline-buffer preference ──────────────────────────────
+   Two small levers the user should own rather than have imposed:
+
+   • Haptics: a 10ms tick on the primary transport controls. Native music
+     apps do this and its absence is part of why web apps feel less solid.
+     Only on play/pause/next/prev/like — buzzing on every tap is irritating.
+   • Offline buffering: downloading the next songs costs mobile data, so
+     it's a choice, not something we quietly do to someone's data plan.
+     (The OS-level Data Saver flag is still honoured on top of this.) */
+if (typeof S.homeCfg.haptics !== "boolean") S.homeCfg.haptics = true;
+if (typeof S.homeCfg.buffer  !== "boolean") S.homeCfg.buffer  = true;
+
+function haptic(ms = 10) {
+  if (!S.homeCfg.haptics) return;
+  try { navigator.vibrate && navigator.vibrate(ms); } catch {}
+}
+
+(function initPrefToggles() {
+  const hap = $("settings-haptics"), buf = $("settings-buffer");
+  if (hap) {
+    hap.checked = S.homeCfg.haptics;
+    hap.addEventListener("change", () => {
+      S.homeCfg.haptics = hap.checked;
+      LS.set("nd_homecfg", S.homeCfg);
+      if (hap.checked) haptic(15);            // confirm it by feel
+    });
+  }
+  if (buf) {
+    buf.checked = S.homeCfg.buffer;
+    buf.addEventListener("change", () => {
+      S.homeCfg.buffer = buf.checked;
+      LS.set("nd_homecfg", S.homeCfg);
+      toast(buf.checked ? "Downloading songs ahead" : "Offline downloads off");
+      if (buf.checked) fillBuffer();
+    });
+  }
+
+  // Wire the tick onto the primary transport controls only.
+  ["ctrl-play","ctrl-next","ctrl-prev","mini-play","mini-next","mini-like","np-like"]
+    .forEach(id => $(id)?.addEventListener("click", () => haptic(10)));
 })();

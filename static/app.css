@@ -1760,3 +1760,44 @@ html[data-theme="dark"] .lib-hero { filter: saturate(1.05); }
 }
 .to-top.show { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
 .to-top:active { transform: scale(.92); }
+
+/* ═══════════════════════════════════════════════════════════════
+   Touch targets (accessibility + one-handed use)
+
+   Measured: 30 controls rendered smaller than the ~44px comfortable
+   touch floor — icon buttons at 38px, the mini-player's like button at
+   36px, nav items only 30px tall inside a 62px bar. On a phone, in a
+   car, or mid-jog, those are genuinely hard to hit.
+
+   Rather than enlarging the artwork (which would coarsen a deliberately
+   compact design), each control gets an invisible centred hit area via
+   ::after. Visuals are pixel-identical; the tappable region grows.
+═══════════════════════════════════════════════════════════════ */
+.icon-btn, .mini-like, .mini-play, .mini-next,
+.to-top, .lang-pill, .pl-card-menu, .now-act {
+  position: relative;
+}
+.icon-btn::after, .mini-like::after, .mini-play::after, .mini-next::after,
+.to-top::after, .lang-pill::after, .pl-card-menu::after, .now-act::after {
+  content: "";
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 46px; height: 46px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+}
+
+/* Nav items were 30px tall in a 62px bar — over half the bar was dead
+   space above and below the label. Stretching each item to fill the bar
+   makes the whole column tappable. (A pseudo-element hit area was tried
+   first and lost the hit test to something painting above it; stretching
+   the real box is simpler and provably works.) */
+.bottom-nav .nav-item {
+  position: relative;
+  align-self: stretch;
+  justify-content: center;
+}
+
+/* Search chips at 28px tall are fiddly; 36px is comfortable without
+   making the row feel heavy. */
+.s-chip { min-height: 36px; }
