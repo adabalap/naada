@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v41";
+const APP_VERSION = "v42";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -684,8 +684,8 @@ function updateMediaSession(t) {
     const set = (action, fn) => {
       try { navigator.mediaSession.setActionHandler(action, fn); } catch {}
     };
-    set("play",  () => { audio.play(); S.playing = true; setPlayIcons(true); vinylPlay(true); patchLists(); });
-    set("pause", () => { audio.pause(); S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists(); });
+    set("play",  () => { S.wantPlaying = true; audio.play(); S.playing = true; setPlayIcons(true); vinylPlay(true); patchLists(); });
+    set("pause", () => { S.wantPlaying = false; audio.pause(); S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists(); });
     set("previoustrack", () => playPrev());
     set("nexttrack",     () => playNext());
     set("seekto", (d) => { if (d.seekTime != null && audio.duration) audio.currentTime = d.seekTime; });
@@ -731,6 +731,14 @@ function updateMeta(t) {
   const qb = $("queue-badge");
   if (qb) qb.textContent = `${S.queue.length} song${S.queue.length!==1?"s":""}`;
 
+  // Keep the OS media notification / lock screen in step with the track.
+  // This lives HERE rather than in play() because the gapless fast path
+  // (see the "ended" handler) deliberately bypasses play() to avoid a silent
+  // gap — which meant the notification kept showing the first song's title
+  // for the rest of the queue. updateMeta() is called by every path that
+  // changes track, so it's the correct single home for this.
+  if (typeof updateMediaSession === "function") updateMediaSession(t);
+
   // Tint the player from the album art (async, fails soft)
   if (typeof applyArtColors === "function") applyArtColors(t);
 }
@@ -755,8 +763,15 @@ function updateNpLike() {
 function togglePlay() {
   if (!S.track) return;
   if (audio.paused) {
+    S.wantPlaying = true;               // record intent BEFORE the async call
     audio.play().then(() => { S.playing = true; setPlayIcons(true); vinylPlay(true); patchLists(); });
   } else {
+    // This is the single funnel for "the user asked to pause" — the on-screen
+    // buttons, the keyboard, and the lock-screen/headphone controls all end up
+    // here. Setting intent at the source (rather than guessing from individual
+    // click handlers) is what stops the background auto-resume from overriding
+    // a deliberate pause a moment later.
+    S.wantPlaying = false;
     audio.pause(); S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists();
   }
 }
@@ -1718,6 +1733,7 @@ $("now-close").addEventListener("click", closeNowScreen);
 $("now-queue-btn").addEventListener("click", () => { closeNowScreen(); goto("queue"); });
 
 $("mini-play").addEventListener("click", e => { e.stopPropagation(); togglePlay(); });
+$("mini-prev")?.addEventListener("click", e => { e.stopPropagation(); playPrev(); });
 $("mini-next").addEventListener("click", e => { e.stopPropagation(); playNext(); });
 $("mini-like").addEventListener("click", e => { e.stopPropagation(); if (S.track) toggleLike(S.track.id, [S.track]); });
 
@@ -3238,9 +3254,13 @@ document.addEventListener("visibilitychange", () => {
 
 // Track user intent so recovery never fights a deliberate pause
 const _origTogglePlay = typeof togglePlay === "function" ? togglePlay : null;
-audio.addEventListener("play",  () => { S.wantPlaying = true;  });
-$("ctrl-play")?.addEventListener("click", () => { S.wantPlaying = audio.paused; });
-$("mini-play")?.addEventListener("click", () => { S.wantPlaying = audio.paused; });
+audio.addEventListener("play", () => { S.wantPlaying = true; });
+// Note: intent on PAUSE is set inside togglePlay() and the MediaSession
+// "pause" handler — i.e. at the points a human actually asks to stop. The
+// previous approach inferred it from #ctrl-play / #mini-play click handlers,
+// which missed the keyboard shortcut, the lock-screen button and headphone
+// controls: those pauses looked like OS interference, so auto-resume undid
+// them and playback restarted a moment after the user paused.
 
 /* ── Background-playback resilience ───────────────────────────────────
    Correction to an earlier version of this file: the Screen Wake Lock is
@@ -3261,25 +3281,53 @@ $("mini-play")?.addEventListener("click", () => { S.wantPlaying = audio.paused; 
      4. Installing as a PWA and setting battery to Unrestricted — still the
         single biggest lever, and the same advice Spotify gives. */
 
+/* ── Screen Wake Lock ─────────────────────────────────────────────────
+   What this genuinely does: stops the SCREEN sleeping while music is
+   playing and the app is on screen. That's the dashboard case — phone
+   mounted in the car, or propped up while you cook — where having the
+   display die every 30 seconds is the annoyance.
+
+   What it does NOT do, to be clear: it cannot keep audio alive once the
+   app is minimised. The spec releases the lock automatically whenever the
+   document becomes hidden, and request() rejects outright if the page
+   isn't visible. Background survival comes from gapless transitions,
+   MediaSession, and battery-Unrestricted — not from this.
+
+   Because it holds the display on, it costs battery, so it's a setting
+   the user owns rather than something we impose. */
 let _wakeLock = null;
+
 async function acquireWakeLock() {
+  if (!S.homeCfg.wakeLock) return;                  // user turned it off
+  if (!("wakeLock" in navigator)) return;           // unsupported browser
+  if (_wakeLock) return;                            // already held
+  if (document.hidden) return;                      // request() would reject
+  if (!S.wantPlaying || audio.paused) return;       // only while actually playing
   try {
-    if ("wakeLock" in navigator && !_wakeLock && S.wantPlaying) {
-      _wakeLock = await navigator.wakeLock.request("screen");
-      _wakeLock.addEventListener("release", () => { _wakeLock = null; });
-    }
-  } catch { /* wake lock is a nice-to-have, never required */ }
+    _wakeLock = await navigator.wakeLock.request("screen");
+    _wakeLock.addEventListener("release", () => { _wakeLock = null; });
+    window.ndlog && window.ndlog("wake lock acquired — screen will stay on");
+  } catch (e) {
+    _wakeLock = null;                               // denied; harmless
+    window.ndlog && window.ndlog(`wake lock refused: ${e.name}`);
+  }
 }
+
 function releaseWakeLock() {
   try { _wakeLock?.release(); } catch {}
   _wakeLock = null;
 }
-// Re-acquire after the OS drops it on tab switch, if we still want audio
+
+// The OS drops the lock whenever we're hidden, so re-take it on return.
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && S.wantPlaying && !audio.paused) acquireWakeLock();
+  if (document.hidden) { _wakeLock = null; return; }  // already released by UA
+  acquireWakeLock();
 });
 audio.addEventListener("playing", acquireWakeLock);
-audio.addEventListener("pause", releaseWakeLock);
+audio.addEventListener("pause",   releaseWakeLock);
+audio.addEventListener("ended",   () => { if (!S.queue?.length) releaseWakeLock(); });
+
+function wakeLockSupported() { return "wakeLock" in navigator; }
 
 /* The core auto-resume: if audio pauses but the user's intent is still
    "playing" and no phone call / other app has taken audio focus, resume.
@@ -3736,6 +3784,19 @@ function installDiagnostics() {
       ? "Chrome reports the app as installable"
       : "Chrome has not offered an install prompt" });
 
+  // The app-switcher / recents icon is NOT read live from the manifest — it
+  // is copied into the generated WebAPK when you install, and Android keeps
+  // using that copy. So if the icons changed after installing (as they did
+  // here), the recents view can keep showing the old or a blank icon
+  // indefinitely, even though the manifest is now perfect. The only reliable
+  // refresh is uninstall + reinstall.
+  if (installed) {
+    rows.push({ ok: true, warn: true, label:
+      "App-switcher icon is baked in at install time. If it looks wrong or "
+      + "blank, uninstall Naada and install it again — Android will not "
+      + "refresh that icon on its own." });
+  }
+
   // Two very different reasons an install prompt might be missing.
   const proxiedHttps = isHttps && !localHost;
   if (proxiedHttps && !installed && !_installPrompt) {
@@ -4087,7 +4148,8 @@ function renderRecentSearches() {
    • Offline buffering: downloading the next songs costs mobile data, so
      it's a choice, not something we quietly do to someone's data plan.
      (The OS-level Data Saver flag is still honoured on top of this.) */
-if (typeof S.homeCfg.haptics !== "boolean") S.homeCfg.haptics = true;
+if (typeof S.homeCfg.haptics  !== "boolean") S.homeCfg.haptics  = true;
+if (typeof S.homeCfg.wakeLock !== "boolean") S.homeCfg.wakeLock = true;
 if (typeof S.homeCfg.buffer  !== "boolean") S.homeCfg.buffer  = true;
 
 function haptic(ms = 10) {
@@ -4115,7 +4177,24 @@ function haptic(ms = 10) {
     });
   }
 
+  const wl = $("settings-wakelock"), wlHint = $("settings-wakelock-hint");
+  if (wl) {
+    if (!wakeLockSupported()) {
+      // Don't offer a switch that can't do anything — say why instead.
+      wl.checked = false; wl.disabled = true;
+      if (wlHint) wlHint.textContent = "This browser doesn't support keeping the screen awake.";
+    } else {
+      wl.checked = S.homeCfg.wakeLock;
+      wl.addEventListener("change", () => {
+        S.homeCfg.wakeLock = wl.checked;
+        LS.set("nd_homecfg", S.homeCfg);
+        if (wl.checked) { acquireWakeLock(); toast("Screen will stay on while playing"); }
+        else { releaseWakeLock(); toast("Screen can sleep normally"); }
+      });
+    }
+  }
+
   // Wire the tick onto the primary transport controls only.
-  ["ctrl-play","ctrl-next","ctrl-prev","mini-play","mini-next","mini-like","np-like"]
+  ["ctrl-play","ctrl-next","ctrl-prev","mini-play","mini-prev","mini-next","mini-like","np-like"]
     .forEach(id => $(id)?.addEventListener("click", () => haptic(10)));
 })();

@@ -1,0 +1,4305 @@
+diff --git a/app.py b/app.py
+index 904d64a..4a4d67a 100644
+--- a/app.py
++++ b/app.py
+@@ -87,13 +87,50 @@ if _HAS_CORS:
+ # X-Forwarded-* headers so request.scheme/host reflect the real client request.
+ # Harmless on Termux (no proxy sets these headers). Enabled when NAADA_HTTP_ONLY
+ # is set, i.e. the dedicated-server deployment path.
+-if os.environ.get("NAADA_HTTP_ONLY", "").lower() in ("1", "true", "yes"):
++if (os.environ.get("NAADA_HTTP_ONLY", "").lower() in ("1", "true", "yes")
++        or os.environ.get("NAADA_BEHIND_PROXY", "").lower() in ("1", "true", "yes")):
+     try:
+         from werkzeug.middleware.proxy_fix import ProxyFix
+         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+     except Exception as _e:
+         pass
+ 
++
++# ─────────────────────────────────────────────────────────────────────────
++# Optional access gate.
++#
++# Behind Cloudflare this app is reachable by anyone who learns the URL, and
++# it spends your Gemini quota. Set NAADA_TOKEN to require a shared secret;
++# leave it unset and behaviour is exactly as before (open), so nothing
++# changes for a localhost-only install.
++#
++# Visit  https://your-domain/?k=YOUR_TOKEN  once and the cookie is stored.
++# ─────────────────────────────────────────────────────────────────────────
++NAADA_TOKEN = os.environ.get("NAADA_TOKEN", "").strip()
++_OPEN_PATHS = ("/sw.js", "/manifest.json", "/favicon.ico", "/static/icons/")
++
++
++@app.before_request
++def _require_token():
++    if not NAADA_TOKEN:
++        return None                       # gate disabled — original behaviour
++    p = request.path
++    if p.startswith(_OPEN_PATHS):
++        return None                       # icons/manifest stay public so the
++                                          # install prompt can still work
++    if request.cookies.get("naada_k") == NAADA_TOKEN:
++        return None
++    supplied = request.args.get("k", "")
++    if supplied and supplied == NAADA_TOKEN:
++        from flask import make_response, redirect
++        r = make_response(redirect(request.path or "/"))
++        r.set_cookie("naada_k", NAADA_TOKEN, max_age=365 * 24 * 3600,
++                     httponly=True, samesite="Lax",
++                     secure=request.headers.get("X-Forwarded-Proto") == "https")
++        return r
++    return jsonify({"error": "unauthorized"}), 401
++
++
+ # ── JioSaavn session ───────────────────────────────────────────────────────
+ SAAVN = "https://www.jiosaavn.com/api.php"
+ SESS  = requests.Session()
+@@ -101,7 +138,10 @@ SESS.headers.update({
+     "User-Agent":      "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+     "Referer":         "https://www.jiosaavn.com/",
+     "Accept":          "application/json, text/plain, */*",
+-    "Accept-Language": "en-IN,en;q=0.9,te;q=0.8,hi;q=0.7",
++    # Keep this neutral. The real language preference is applied per-request
++    # via the "L" cookie in saavn(); a hardcoded priority list here would
++    # fight it and re-bias content toward whatever we pinned.
++    "Accept-Language": "en-IN,en;q=0.9",
+     "Origin":          "https://www.jiosaavn.com",
+ })
+ 
+@@ -241,8 +281,21 @@ def norm(s: dict) -> dict:
+ def saavn(params: dict, timeout=12) -> dict:
+     defaults = {"_format":"json","_marker":"0","api_version":"4","ctx":"web6dot0"}
+     defaults.update(params)
++
++    # JioSaavn weights content (albums, new releases, featured) by a language
++    # PRIORITY list held in the "L" cookie, not just the per-call `language`
++    # param. If we leave the session default in place, a single
++    # language=telugu argument gets outvoted and you get Bollywood anyway.
++    # So when a call names a language, lead the cookie's priority list with
++    # it, keeping the others as fallbacks so nothing 404s on thin catalogues.
++    cookies = None
++    lang = params.get("language")
++    if lang:
++        order = [lang] + [x for x in ("hindi","english","tamil","telugu") if x != lang]
++        cookies = {"L": "%2C".join(order)}   # %2C = comma, as JioSaavn stores it
++
+     try:
+-        r = SESS.get(SAAVN, params=defaults, timeout=timeout)
++        r = SESS.get(SAAVN, params=defaults, timeout=timeout, cookies=cookies)
+         r.raise_for_status()
+         data = r.json()
+         # JioSaavn sometimes returns literal JSON `null` or a list. Normalise:
+@@ -284,6 +337,35 @@ def sw():
+     r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+     return r
+ 
++
++# ─────────────────────────────────────────────────────────────────────────
++# Digital Asset Links — proves this domain and the Naada Android app are the
++# same owner, which is what lets the installed .apk (a Trusted Web Activity)
++# run FULLSCREEN with no browser address bar.
++#
++# The SHA-256 fingerprint below must match your release signing key. Get it
++# with:
++#     keytool -list -v -keystore apk/naada-release.keystore -alias naada
++# then set it in the environment (so the real value never lives in git):
++#     export NAADA_APK_FINGERPRINT="AA:BB:CC:...:FF"
++# Until it's set this returns an empty list, which is harmless — the app
++# still works, it just shows the URL bar until the fingerprint is in place.
++# ─────────────────────────────────────────────────────────────────────────
++@app.route("/.well-known/assetlinks.json")
++def asset_links():
++    fp = os.environ.get("NAADA_APK_FINGERPRINT", "").strip()
++    if not fp:
++        return jsonify([])
++    return jsonify([{
++        "relation": ["delegate_permission/common.handle_all_urls"],
++        "target": {
++            "namespace": "android_app",
++            "package_name": "com.adabala.naada",
++            "sha256_cert_fingerprints": [fp],
++        },
++    }])
++
++
+ @app.route("/favicon.ico")
+ def favicon_ico():
+     r = send_from_directory("static/icons", "favicon.ico")
+@@ -1040,6 +1122,48 @@ def log_request():
+     if not request.path.startswith("/static") and request.path != "/sw.js":
+         log.debug(f"→ {request.method} {request.path} {dict(request.args)}")
+ 
++
++# ─────────────────────────────────────────────────────────────────────────
++# Cache headers, written for life behind Cloudflare.
++#
++# Cloudflare caches .js/.css/.png at its edge by default. That's fine for
++# our versioned assets (app.js?v=30) because the query string is part of
++# the cache key — bump the version and the edge fetches fresh.
++#
++# What is NOT safe to leave implicit is the app shell. If Cloudflare (or
++# any intermediary) holds on to index.html or manifest.json, users get new
++# JavaScript stapled to an old page, or an old manifest that quietly breaks
++# installability. Both fail in confusing ways, so we say no-cache out loud.
++# ─────────────────────────────────────────────────────────────────────────
++@app.after_request
++def _cache_policy(resp):
++    p = request.path
++    if p == "/" or p.endswith((".html", "/manifest.json", "/sw.js")):
++        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
++        resp.headers["Pragma"] = "no-cache"
++    elif p.startswith("/static/icons/"):
++        # Icons change only when we ship new ones, and they're referenced
++        # by fixed names, so let the edge hold them for a day.
++        # Direct assignment: Flask's static handler has already set no-cache,
++        # and setdefault would silently lose to it.
++        resp.headers["Cache-Control"] = "public, max-age=86400"
++    elif p.startswith("/static/") and request.args.get("v"):
++        # Versioned asset: safe to cache hard, the URL changes on release.
++        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
++    elif p.startswith("/api/"):
++        resp.headers["Cache-Control"] = "no-store"
++
++    # Baseline security headers — the app is on the public internet now (OCI
++    # behind Cloudflare), so these are worth setting. HSTS is deliberately
++    # left to Cloudflare, which owns TLS termination and can apply it edge-
++    # wide without risking a self-inflicted lockout from the origin.
++    resp.headers["X-Content-Type-Options"] = "nosniff"
++    resp.headers["X-Frame-Options"] = "SAMEORIGIN"        # block clickjacking
++    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
++    resp.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
++    return resp
++
++
+ @app.after_request
+ def log_response(resp):
+     if not request.path.startswith("/static") and request.path != "/sw.js":
+@@ -1195,6 +1319,7 @@ def run_server(daemon_mode=False):
+         ssl_context=ssl_ctx,
+     )
+ 
++
+ if __name__ == "__main__":
+     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+ 
+diff --git a/naada.sh b/naada.sh
+index f144f09..ad66d07 100755
+--- a/naada.sh
++++ b/naada.sh
+@@ -108,13 +108,52 @@ cmd_fg() {
+ 
+ case "${1:-start}" in
+   start)   cmd_start ;;
++  # Plain HTTP on localhost. Counter-intuitive but correct: Chrome trusts
++  # http://localhost automatically and will offer to INSTALL the app, whereas
++  # https:// with a self-signed cert you clicked past is treated as having a
++  # certificate error and cannot be installed at all. Installing is what makes
++  # background playback and the Naada media-notification icon work.
++  start-http)
++    export NAADA_HTTP_ONLY=1
++    cmd_start
++    ;;
++  # Behind Cloudflare on a real server (OCI, VPS, etc). Cloudflare terminates
++  # TLS with a real certificate, so this app serves plain HTTP and must NOT do
++  # its own TLS -- two TLS layers is how you get handshake errors. ProxyFix is
++  # enabled so X-Forwarded-Proto/For are trusted (real client IP, correct
++  # https scheme in redirects/cookies).
++  #
++  # Binding: defaults to 0.0.0.0 so Cloudflare's edge can reach the origin
++  # over the OCI public IP. If you use a Cloudflare TUNNEL (cloudflared runs
++  # on the box and dials out), you can lock this down with:
++  #     NAADA_HOST=127.0.0.1 ./naada.sh start-cloud
++  # so nothing is exposed on the public interface at all.
++  #
++  # Security: the app is now on the public internet. Set NAADA_TOKEN to gate
++  # access, or rely on Cloudflare Access in front. See start-cloud help.
++  start-cloud)
++    export NAADA_HTTP_ONLY=1
++    export NAADA_BEHIND_PROXY=1
++    export NAADA_HOST="${NAADA_HOST:-0.0.0.0}"
++    cmd_start
++    ;;
+   stop)    cmd_stop ;;
+   restart) cmd_restart ;;
+   status)  cmd_status ;;
+   logs)    cmd_logs ;;
+   fg)      cmd_fg ;;
+   *)
+-    echo "Usage: ./naada.sh {start|stop|restart|status|logs|fg}"
++    echo "Usage: ./naada.sh {start|start-http|start-cloud|stop|restart|status|logs|fg}"
++    echo
++    echo "  start-cloud  For Cloudflare. Plain HTTP + trusts X-Forwarded-*."
++    echo "               Cloudflare provides the real certificate, so the"
++    echo "               PWA installs properly and the icon/background"
++    echo "               playback both work."
++    echo
++    echo "  start-http   Serve plain HTTP on http://localhost:5000."
++    echo "               Use this on the phone itself — Chrome will then offer"
++    echo "               to install Naada as a real app (proper icon, and music"
++    echo "               keeps playing when minimised)."
+     exit 1
+     ;;
+ esac
+diff --git a/static/app.css b/static/app.css
+index 355bef2..718656c 100644
+--- a/static/app.css
++++ b/static/app.css
+@@ -7,6 +7,10 @@
+ :root {
+   /* Brand */
+   --purple:    #4A1A6B;
++  /* Solid brand fill, used where white text sits ON the colour. Kept
++     separate from --purple (text ink) so dark mode can lighten the ink
++     for contrast without washing out fills or the brand gradient. */
++  --purple-fill: #4A1A6B;
+   --purple-lt: #7B3FA0;
+   --purple-bg: #F3EDF8;
+   --teal:      #0891B2;
+@@ -26,7 +30,7 @@
+   --gray-800:  #2E2C28;
+   --black:     #1A1917;
+   /* Gradients */
+-  --grad-brand: linear-gradient(135deg, var(--purple) 0%, var(--rose) 60%, var(--gold) 100%);
++  --grad-brand: linear-gradient(135deg, var(--purple-fill) 0%, #E11D75 60%, #F59E0B 100%);
+   --grad-teal:  linear-gradient(135deg, var(--teal) 0%, #06B6D4 100%);
+   /* Spacing */
+   --nav-h:     62px;
+@@ -286,7 +290,7 @@ html, body {
+   background: var(--white); transition: all .15s;
+ }
+ .s-chip.active {
+-  background: var(--purple); color: #fff; border-color: var(--purple);
++  background: var(--purple-fill); color: #fff; border-color: var(--purple-fill);
+ }
+ 
+ /* ── State messages ────────────────────────────────────────────────────── */
+@@ -337,11 +341,26 @@ html, body {
+ .pl-card:active { transform: scale(.97); }
+ .pl-card-img {
+   width: 100%; aspect-ratio: 1; border-radius: var(--r-xs);
+-  background: var(--grad-brand); overflow: hidden;
++  background: var(--gray-100); overflow: hidden;
+   display: flex; align-items: center; justify-content: center;
+   font-size: 32px; margin-bottom: 8px; position: relative;
+ }
+ .pl-card-img img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
++/* 2×2 mosaic of member artwork */
++.cover-quad {
++  position: absolute; inset: 0;
++  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1px;
++}
++.cover-quad img { position: static; width: 100%; height: 100%; object-fit: cover; }
++/* Distinct generated cover for an empty album: its own hue + initial */
++.cover-initial {
++  position: absolute; inset: 0;
++  display: flex; align-items: center; justify-content: center;
++  font-family: var(--font-display, serif);
++  font-size: 46px; font-weight: 700; color: #fff;
++  background: linear-gradient(140deg,
++              hsl(var(--h) 70% 58%), hsl(calc(var(--h) - 24) 66% 42%));
++}
+ .pl-card-name { font-size: 13px; font-weight: 700; color: var(--black); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+ .pl-card-count { font-size: 11px; color: var(--gray-400); margin-top: 2px; }
+ .pl-new-btn {
+@@ -572,11 +591,12 @@ html, body {
+ }
+ .pl-select-item:active { background: var(--gray-100); }
+ .pl-select-thumb {
+-  width: 44px; height: 44px; border-radius: 8px;
+-  background: var(--grad-brand); flex-shrink: 0; overflow: hidden;
++  width: 44px; height: 44px; border-radius: 8px; position: relative;
++  background: var(--gray-100); flex-shrink: 0; overflow: hidden;
+   display: flex; align-items: center; justify-content: center; font-size: 20px;
+ }
+ .pl-select-thumb img { width: 100%; height: 100%; object-fit: cover; }
++.pl-select-thumb .cover-initial { font-size: 20px; }
+ .pl-select-name { font-size: 14px; font-weight: 600; color: var(--black); }
+ .pl-select-count { font-size: 12px; color: var(--gray-400); }
+ 
+@@ -608,13 +628,14 @@ html, body {
+   flex-shrink: 0; width: 120px; cursor: pointer;
+ }
+ .mini-card-img {
+-  width: 120px; height: 120px; border-radius: var(--r-sm);
++  width: 120px; height: 120px; border-radius: var(--r-sm); position: relative;
+   background: var(--gray-100); overflow: hidden; margin-bottom: 6px;
+   display: flex; align-items: center; justify-content: center; font-size: 32px;
+   box-shadow: var(--shadow-sm);
+ }
+-.mini-card-img.pl { background: var(--grad-brand); color:#fff; }
++.mini-card-img.pl { color:#fff; }
+ .mini-card-img img { width: 100%; height: 100%; object-fit: cover; }
++.mini-card-img .cover-initial { font-size: 40px; }
+ .mini-card-title {
+   font-size: 12px; font-weight: 600; color: var(--black);
+   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+@@ -888,7 +909,7 @@ body::before {
+   border: none; border-radius: 18px; padding: 7px 16px;
+   font-size: 12px; font-weight: 600; cursor: pointer;
+ }
+-.trivia-reveal:active { background: var(--purple); color: #fff; }
++.trivia-reveal:active { background: var(--purple-fill); color: #fff; }
+ .trivia-song {
+   margin-top: 10px; font-size: 11px; color: var(--gray-400);
+   display: flex; align-items: center; gap: 4px;
+@@ -1032,7 +1053,7 @@ body::before {
+   font-size: 13px; font-weight: 700; margin-right: 8px;
+   vertical-align: middle;
+ }
+-.lang-opt.active .lang-opt-glyph { background: var(--purple); color: #fff; }
++.lang-opt.active .lang-opt-glyph { background: var(--purple-fill); color: #fff; }
+ 
+ /* Popover — anchored top-right under the header pill */
+ .lang-pop {
+@@ -1150,3 +1171,641 @@ body::before {
+   background: var(--grad-brand); color: #fff; border-color: transparent;
+ }
+ .data-btn:disabled { opacity: .6; cursor: default; }
++
++/* ═══════════════════════════════════════════════════════════════
++   v3 — Rangoli pass: display type, raga-wave signature, depth,
++   focus/motion accessibility floor, full dark theme
++═══════════════════════════════════════════════════════════════ */
++
++:root {
++  --font-display: 'Fraunces', Georgia, 'Noto Serif Telugu', serif;
++  /* extracted so the few hard-coded translucent surfaces can re-theme */
++  --surface-glass:        rgba(251,248,244,.86);
++  --surface-glass-strong: rgba(255,255,255,.94);
++  --overlay-loading:      rgba(250,250,248,.82);
++  --overlay-loading-soft: rgba(250,250,248,.6);
++  --toast-bg: var(--black);
++  --toast-fg: #fff;
++  --now-bg: linear-gradient(180deg, var(--purple-bg) 0%, var(--white) 45%);
++  --ease-soft: cubic-bezier(.22,1,.36,1);
++}
++
++/* ── Display type on headline moments only — used with restraint ──────── */
++.logo-name, .home-title, .now-title, .sheet-title, .about-name,
++.mood-result-title, .lib-hero-title, .modal-title, .lyrics-title,
++.pl-detail-title, #chart-title {
++  font-family: var(--font-display);
++  font-optical-sizing: auto;
++}
++.home-title { font-weight: 600; letter-spacing: -.3px; }
++.now-title  { font-weight: 600; }
++.about-name { font-weight: 700; }
++.mood-result-title { font-weight: 700; }
++
++/* ── Signature: raga-wave — a quiet bar-rhythm motif standing in for
++   flat rule lines, echoing నాద (sound) itself. Static, not another
++   spinner: the restraint is the point. ─────────────────────────────── */
++.section-divider {
++  height: 14px; background: none; position: relative; margin: 6px 18px 22px;
++}
++.section-divider::before {
++  content: ""; position: absolute; inset: 0; margin: auto; height: 100%;
++  background-image: repeating-linear-gradient(
++    90deg, var(--purple) 0 2px, transparent 2px 9px
++  );
++  background-size: 100% 40%, 100% 70%, 100% 100%;
++  mask-image: linear-gradient(90deg, transparent, black 15%, black 85%, transparent);
++  -webkit-mask-image: linear-gradient(90deg, transparent, black 15%, black 85%, transparent);
++  opacity: .18;
++}
++.about-foot { position: relative; }
++.about-foot::before {
++  content: ""; display: block; height: 10px; margin: 0 auto 14px; width: 70%;
++  background-image: repeating-linear-gradient(90deg, var(--gold) 0 2px, transparent 2px 8px);
++  opacity: .3;
++}
++
++/* ── Depth on tap targets — hover only where a real pointer exists,
++   so touch devices keep the existing :active feedback untouched ────── */
++@media (hover: hover) and (pointer: fine) {
++  .card-img, .mini-card-img, .pl-card, .trivia-card, .about-stat, .lib-stat {
++    transition: transform .22s var(--ease-soft), box-shadow .22s var(--ease-soft);
++  }
++  .card:hover .card-img, .mini-card:hover .mini-card-img {
++    transform: translateY(-3px);
++    box-shadow: 0 10px 24px rgba(74,26,107,.22);
++  }
++  .pl-card:hover, .trivia-card:hover {
++    transform: translateY(-2px);
++    box-shadow: 0 8px 20px rgba(74,26,107,.14);
++  }
++  .about-stat:hover, .lib-stat:hover { transform: translateY(-2px); }
++  .play-btn:hover { box-shadow: 0 6px 22px rgba(74,26,107,.48); }
++  .shelf-hdr:hover .sec-title { color: var(--purple); }
++  .track:hover { background: var(--gray-50); }
++}
++
++/* ── Accessibility floor: visible keyboard focus everywhere ──────────── */
++button:focus-visible, .icon-btn:focus-visible, input:focus-visible,
++[role="button"]:focus-visible, [role="menuitem"]:focus-visible,
++.nav-item:focus-visible, .card:focus-visible, .lang-chip:focus-visible,
++.s-chip:focus-visible, select:focus-visible {
++  outline: 2px solid var(--purple);
++  outline-offset: 2px;
++  border-radius: var(--r-xs);
++}
++
++/* ── Motion floor: honour reduced-motion system-wide ──────────────────── */
++@media (prefers-reduced-motion: reduce) {
++  *, *::before, *::after {
++    animation-duration: .001ms !important;
++    animation-iteration-count: 1 !important;
++    transition-duration: .001ms !important;
++    scroll-behavior: auto !important;
++  }
++}
++
++/* ── Re-point the few hard-coded translucent surfaces at tokens ──────── */
++.app-header, .bottom-nav { background: var(--surface-glass); }
++.mini-player { background: var(--surface-glass-strong); }
++.load-overlay { background: var(--overlay-loading); }
++.now-loader { background: var(--overlay-loading-soft); }
++.toast { background: var(--toast-bg); color: var(--toast-fg); }
++.now-screen { background: var(--now-bg); }
++
++/* Seek + volume-style range inputs: gradient thumb, softer glow */
++.seek-bar::-webkit-slider-thumb {
++  background: var(--grad-brand);
++  box-shadow: 0 0 0 4px rgba(74,26,107,.15), 0 2px 6px rgba(74,26,107,.35);
++}
++
++/* ═══════════════════════════════════════════════════════════════
++   Dark theme — a deep aubergine canvas, not an inverted default.
++   Nearly every component already reads from these tokens, so this
++   block re-themes nav, header, cards, sheets, and the now-playing
++   screen in one pass.
++═══════════════════════════════════════════════════════════════ */
++/* JS resolves the user's choice (light / auto / dark) into
++   html[data-theme="dark"|"light"] before first paint, and live-updates it
++   when the OS scheme flips while on "auto". */
++html[data-theme="dark"] {
++    /* Solid accents, re-tuned for a dark canvas. The previous build themed
++       only the tint backgrounds and left these at their light-mode values,
++       so --purple (#4A1A6B) was rendering at 1.37:1 against a card — the
++       playing track's title came out DIMMER than the rows around it, which
++       is exactly backwards. These all clear WCAG AA on the lightest dark
++       surface; measured, not eyeballed. */
++    --purple:    #C9A7F0;   /* text ink, 8.5:1 on cards      */
++    --purple-fill: #6D3391; /* solid fill, white text 8.3:1  */
++    --purple-lt: #DCC6FA;   /* 11.2:1 */
++    --teal:      #22D3EE;   /* 9.6:1  */
++    --gold:      #FBBF24;   /* 10.4:1 */
++    --rose:      #FF6BA6;   /* 6.6:1  */
++
++    --purple-bg: rgba(123,63,160,.22);
++    --teal-bg:   rgba(34,211,238,.16);
++    --gold-bg:   rgba(245,158,11,.18);
++    --rose-bg:   rgba(225,29,117,.18);
++
++    --white:    #17121F;
++    --gray-50:  #1D1728;
++    --gray-100: #2A2136;
++    --gray-200: #3B3049;
++    --gray-400: #948BA6;
++    --gray-600: #C8C0D6;
++    --gray-800: #EFEBF7;
++    --black:    #F5F2FA;
++
++    --shadow-sm: 0 1px 3px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.25);
++    --shadow-md: 0 4px 14px rgba(0,0,0,.4), 0 2px 6px rgba(0,0,0,.3);
++    --shadow-lg: 0 10px 36px rgba(0,0,0,.5);
++
++    --surface-glass:        rgba(23,18,31,.86);
++    --surface-glass-strong: rgba(29,23,40,.94);
++    --overlay-loading:      rgba(23,18,31,.82);
++    --overlay-loading-soft: rgba(23,18,31,.6);
++    --toast-bg: #F5F2FA;
++    --toast-fg: #17121F;
++    --now-bg: linear-gradient(180deg, #241A33 0%, #120C1A 60%);
++}
++
++html[data-theme="dark"] body {
++  background:
++    radial-gradient(circle at 12% 8%,  rgba(225,29,117,.16) 0%, transparent 45%),
++    radial-gradient(circle at 88% 16%, rgba(34,211,238,.14)  0%, transparent 42%),
++    radial-gradient(circle at 50% 96%, rgba(245,158,11,.12)  0%, transparent 50%),
++    radial-gradient(circle at 80% 70%, rgba(123,63,160,.20)  0%, transparent 48%),
++    #120C1A;
++}
++html[data-theme="dark"] body::before { opacity: .5; filter: invert(1) brightness(1.6); }
++html[data-theme="dark"] .lyrics-art,
++html[data-theme="dark"] .np-vinyl-ph,
++html[data-theme="dark"] .now-vinyl .np-vinyl-ph { box-shadow: 0 14px 44px rgba(0,0,0,.55); }
++html[data-theme="dark"] .search-box,
++html[data-theme="dark"] .modal-input { background: var(--gray-50); }
++html[data-theme="dark"] .about-logo img { box-shadow: 0 8px 28px rgba(0,0,0,.5); }
++html[data-theme="dark"] .lib-hero { filter: saturate(1.05); }
++
++/* ═══════════════════════════════════════════════════════════════
++   v3.1 — theme control, track context menu, pins, bulk select
++═══════════════════════════════════════════════════════════════ */
++
++/* Segmented theme control in Settings */
++.seg-ctrl {
++  display: inline-flex; gap: 2px; padding: 3px;
++  background: var(--gray-100); border-radius: 12px;
++}
++.seg-opt {
++  display: inline-flex; align-items: center; gap: 4px;
++  border: none; background: none; cursor: pointer;
++  padding: 7px 11px; border-radius: 9px;
++  font-size: 12px; font-weight: 600; color: var(--gray-600);
++  transition: background .15s, color .15s;
++}
++.seg-opt i { font-size: 14px; }
++.seg-opt.active {
++  background: var(--white); color: var(--purple);
++  box-shadow: var(--shadow-sm);
++}
++
++/* Track context menu head */
++.tm-head {
++  display: flex; align-items: center; gap: 12px;
++  padding: 4px 4px 14px; border-bottom: 1px solid var(--gray-100);
++  margin-bottom: 12px;
++}
++.tm-art {
++  width: 48px; height: 48px; border-radius: 10px; flex-shrink: 0;
++  background: var(--grad-brand); overflow: hidden;
++  display: flex; align-items: center; justify-content: center;
++  font-size: 20px; color: #fff;
++}
++.tm-art img { width: 100%; height: 100%; object-fit: cover; }
++.tm-info { min-width: 0; }
++.tm-title {
++  font-size: 15px; font-weight: 700; color: var(--black);
++  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
++}
++.tm-artist {
++  font-size: 12px; color: var(--gray-400); margin-top: 2px;
++  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
++}
++.modal-opt { display: flex; align-items: center; gap: 11px; }
++.modal-opt i { font-size: 19px; color: var(--gray-600); flex-shrink: 0; }
++.modal-opt.danger i { color: var(--rose); }
++
++/* Row press feedback while long-pressing */
++.track.pressing { background: var(--purple-bg); transition: background .3s; }
++
++/* Pinned song badge on cards; pinned playlist marker */
++.pin-badge {
++  position: absolute; top: 6px; right: 6px; z-index: 2;
++  width: 22px; height: 22px; border-radius: 50%;
++  background: var(--gold); color: #fff;
++  display: flex; align-items: center; justify-content: center;
++  font-size: 12px; box-shadow: var(--shadow-sm);
++}
++.pl-card { position: relative; }
++.pl-card .pin-badge { top: 18px; right: 18px; }
++.pl-card-menu {
++  position: absolute; top: 14px; left: 14px; z-index: 2;
++  width: 26px; height: 26px; border-radius: 50%; border: none;
++  background: rgba(0,0,0,.35); color: #fff; cursor: pointer;
++  display: flex; align-items: center; justify-content: center; font-size: 15px;
++  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
++}
++
++/* Bulk-select bar (playlist detail edit mode) */
++.bulk-bar {
++  position: fixed; left: 50%; transform: translateX(-50%) translateY(120%);
++  bottom: 14px; width: calc(100% - 24px); max-width: 456px;
++  background: var(--surface-glass-strong);
++  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
++  border: 1px solid var(--gray-100);
++  border-radius: 16px; box-shadow: var(--shadow-lg);
++  display: flex; align-items: center; justify-content: space-between; gap: 8px;
++  padding: 10px 14px; z-index: 700;
++  transition: transform .28s var(--ease-soft);
++}
++.bulk-bar.show { transform: translateX(-50%) translateY(0); }
++.bulk-count { font-size: 12px; font-weight: 700; color: var(--purple); flex-shrink: 0; }
++.bulk-actions { display: flex; gap: 6px; }
++.bulk-btn {
++  display: inline-flex; align-items: center; gap: 4px;
++  border: none; border-radius: 18px; padding: 8px 11px;
++  background: var(--gray-100); color: var(--gray-800);
++  font-size: 11.5px; font-weight: 600; cursor: pointer;
++}
++.bulk-btn.danger { background: var(--rose-bg); color: var(--rose); }
++
++/* Selection checkboxes in playlist edit mode */
++.sel-box {
++  width: 22px; height: 22px; border-radius: 7px; flex-shrink: 0;
++  border: 2px solid var(--gray-200); background: var(--white);
++  display: flex; align-items: center; justify-content: center;
++  color: transparent; font-size: 14px; transition: all .12s;
++}
++.track.selected .sel-box {
++  background: var(--purple-fill); border-color: var(--purple-fill); color: #fff;
++}
++.track.selected { background: var(--purple-bg); }
++
++/* The target-playlist picker must stack above the playlist-detail sheet
++   (both are .sheet at z-index 500) or bulk Copy/Move taps get swallowed
++   by the sheet underneath. */
++#add-pl-sheet { z-index: 560; }
++/* Same story for the create-playlist modal reached from that picker */
++#create-pl-modal { z-index: 620; }
++
++/* ═══════════════════════════════════════════════════════════════
++   v24 — dynamic album color, mini-player swipe, playlist reorder
++═══════════════════════════════════════════════════════════════ */
++
++/* ── Dynamic color: the now-playing screen takes its wash from the
++   album art. Two custom props are set from JS; everything below reads
++   from them, so a single failed extraction just falls back to --now-bg. */
++.now-screen {
++  --art-1: transparent;
++  --art-2: transparent;
++  transition: transform .32s cubic-bezier(.4,0,.2,1), visibility 0s linear .32s;
++}
++.now-screen::after {
++  content: ""; position: absolute; inset: 0; z-index: -1;
++  background: linear-gradient(175deg, var(--art-1) 0%, var(--art-2) 55%, transparent 90%);
++  opacity: 0; transition: opacity .7s ease, background .7s ease;
++  pointer-events: none;
++}
++.now-screen.tinted::after { opacity: 1; }
++/* Keep the vinyl glow in sympathy with the extracted colour */
++.now-screen.tinted .now-vinyl { box-shadow: 0 16px 56px var(--art-1); }
++
++/* The mini-player picks up a subtle edge of the same colour */
++.mini-player { --art-1: transparent; }
++.mini-player.tinted {
++  border-color: var(--art-1);
++  box-shadow: var(--shadow-lg), 0 0 0 1px var(--art-1);
++}
++
++/* ── Mini-player swipe ───────────────────────────────────────────
++   Horizontal drag skips tracks, upward drag expands. The bar follows
++   the finger, then snaps or animates out. */
++.mini-player.swiping { transition: none; }
++.mini-player.settling { transition: transform .26s var(--ease-soft), opacity .26s var(--ease-soft); }
++.mini-swipe-hint {
++  position: absolute; top: 50%; transform: translateY(-50%);
++  font-size: 22px; opacity: 0; pointer-events: none;
++  transition: opacity .12s; color: var(--purple);
++}
++.mini-swipe-hint.left  { left: 14px; }
++.mini-swipe-hint.right { right: 14px; }
++.mini-player.hint-next .mini-swipe-hint.left  { opacity: .9; }
++.mini-player.hint-prev .mini-swipe-hint.right { opacity: .9; }
++
++/* ── Playlist drag-to-reorder ────────────────────────────────────
++   Mirrors the queue's affordance so the two screens behave alike. */
++.pl-row.dragging { opacity: .4; }
++.pl-row.drag-over { background: var(--purple-bg); box-shadow: inset 0 2px 0 var(--purple); }
++.pl-grip {
++  color: var(--gray-400); font-size: 18px; cursor: grab;
++  padding: 0 2px; flex-shrink: 0; touch-action: none;
++}
++.reorder-hint {
++  padding: 0 18px 10px; font-size: 11px; color: var(--gray-400);
++  display: flex; align-items: center; gap: 5px;
++}
++
++/* ═══════════════════════════════════════════════════════════════
++   v25 — folders, card layout hardening, drag-to-file
++═══════════════════════════════════════════════════════════════ */
++
++/* Grid items must be allowed to shrink below their content width, or a
++   long album title can blow the column out and clip the right card. */
++.pl-grid, .folder-grid { min-width: 0; }
++.pl-card, .folder-card { min-width: 0; }
++.pl-card-name, .pl-card-count,
++.folder-name, .folder-count { min-width: 0; max-width: 100%; }
++/* Belt and braces: the page itself never scrolls sideways */
++.page { overflow-x: hidden; }
++
++/* Overflow menu moves to the top-right — where every other app puts it —
++   and the pin badge moves to the top-left so the two never collide. */
++.pl-card-menu { top: 14px; right: 14px; left: auto; }
++.pl-card .pin-badge { top: 18px; left: 18px; right: auto; }
++
++/* Library hero row with its own settings entry point */
++.lib-hero-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
++.lib-hero-set { color: #fff; }
++.lib-hero-set:active { background: rgba(255,255,255,.18); }
++
++/* ── Folders ─────────────────────────────────────────────────────
++   A folder is a shelf for albums/playlists — one level deep only, on
++   purpose: deep trees are where personal libraries go to die. */
++.folder-grid {
++  display: grid; grid-template-columns: 1fr 1fr;
++  gap: 12px; padding: 0 18px; margin-bottom: 16px;
++}
++.folder-grid:empty { display: none; }
++.folder-card {
++  position: relative; display: flex; align-items: center; gap: 10px;
++  background: var(--gray-50); border: 1.5px solid var(--gray-100);
++  border-radius: var(--r-sm); padding: 12px; cursor: pointer;
++  transition: transform .14s, box-shadow .14s, border-color .14s, background .14s;
++}
++.folder-card:active { transform: scale(.97); }
++.folder-cover {
++  width: 52px; height: 52px; border-radius: 11px; flex-shrink: 0;
++  overflow: hidden; box-shadow: var(--shadow-sm);
++  background: var(--gray-100);
++}
++.folder-cover.single img { width: 100%; height: 100%; object-fit: cover; }
++.folder-cover.quad {
++  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
++  gap: 1px;
++}
++.folder-cover.quad img { width: 100%; height: 100%; object-fit: cover; }
++.folder-cover.empty {
++  background: var(--grad-brand); color: #fff;
++  display: flex; align-items: center; justify-content: center; font-size: 22px;
++}
++.folder-meta { min-width: 0; flex: 1; }
++.folder-name {
++  font-size: 13px; font-weight: 700; color: var(--black);
++  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
++}
++.folder-count { font-size: 11px; color: var(--gray-400); margin-top: 2px; }
++
++/* Drop target feedback while dragging an album over a folder */
++.folder-card.drop-hot {
++  border-color: var(--purple); background: var(--purple-bg);
++  transform: scale(1.03);
++  box-shadow: 0 6px 20px rgba(74,26,107,.25);
++}
++.pl-card.dragging-card { opacity: .45; transform: scale(.95); }
++
++/* Ghost that follows the finger while dragging an album to a folder */
++.drag-ghost {
++  position: fixed; z-index: 900; pointer-events: none;
++  width: 96px; border-radius: 12px; overflow: hidden;
++  box-shadow: 0 12px 32px rgba(0,0,0,.35);
++  opacity: .92; transform: translate(-50%, -50%) rotate(-3deg);
++}
++.drag-ghost img, .drag-ghost .ph {
++  width: 96px; height: 96px; object-fit: cover; display: block;
++  background: var(--grad-brand);
++}
++
++/* Breadcrumb when inside a folder */
++.crumb {
++  display: flex; align-items: center; gap: 8px;
++  margin: 0 18px 14px; padding: 9px 12px;
++  background: var(--purple-bg); border-radius: var(--r-sm);
++}
++.crumb-back, .crumb-menu {
++  border: none; background: none; cursor: pointer;
++  color: var(--purple); font-size: 18px; padding: 2px;
++  display: flex; align-items: center;
++}
++.crumb-icon { color: var(--purple); font-size: 16px; display: flex; }
++.crumb-name {
++  flex: 1; min-width: 0; font-size: 14px; font-weight: 700; color: var(--purple);
++  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
++}
++
++/* Long-press affordance hint under the playlists header */
++.lib-tip {
++  padding: 0 18px 12px; font-size: 11px; color: var(--gray-400);
++  display: flex; align-items: center; gap: 5px; line-height: 1.5;
++}
++
++/* Install / playback state box in About */
++.install-box { border-radius: 12px; padding: 12px 14px; }
++.install-box.ok {
++  background: var(--teal-bg); border: 1px solid rgba(8,145,178,.25);
++}
++.install-box.warn {
++  background: var(--gold-bg); border: 1px solid rgba(245,158,11,.35);
++}
++.install-h {
++  display: flex; align-items: center; gap: 7px;
++  font-size: 13px; font-weight: 700; margin-bottom: 6px; color: var(--black);
++}
++.install-box.ok  .install-h i { color: var(--teal); font-size: 17px; }
++.install-box.warn .install-h i { color: #B45309; font-size: 17px; }
++.install-box .about-p, .install-box .about-list li { font-size: 12.5px; }
++
++/* Measured diagnostics list in About */
++.check-list { list-style: none; margin: 8px 0; padding: 0; }
++.check-list li {
++  display: flex; align-items: flex-start; gap: 7px;
++  font-size: 12px; line-height: 1.5; padding: 3px 0; color: var(--gray-800);
++}
++.check-list li i { font-size: 15px; flex-shrink: 0; margin-top: 1px; }
++.check-list li.ok i { color: var(--teal); }
++.check-list li.no i { color: var(--rose); }
++.check-list li.warn { font-weight: 600; }
++.check-list li.warn i { color: #B45309; }
++
++/* The concrete fix, called out so it can't be missed */
++.fix-box {
++  margin-top: 12px; padding: 12px;
++  background: var(--white); border: 1.5px solid var(--purple);
++  border-radius: 12px;
++}
++.fix-h {
++  display: flex; align-items: center; gap: 7px;
++  font-size: 13px; font-weight: 700; color: var(--purple); margin-bottom: 6px;
++}
++.fix-code {
++  background: var(--gray-100); border-radius: 8px;
++  padding: 10px 12px; margin: 8px 0;
++  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
++  font-size: 12px; line-height: 1.6; color: var(--black);
++  white-space: pre-wrap; word-break: break-word;
++}
++
++/* The ⋮ on every song row — deleting shouldn't need a hidden gesture */
++.t-menu {
++  position: relative;
++  border: none; background: none; cursor: pointer; padding: 4px;
++  color: var(--gray-400); font-size: 17px; flex-shrink: 0;
++  display: flex; align-items: center; justify-content: center;
++  border-radius: 50%; width: 30px; height: 30px;
++}
++/* Invisible 44px hit area — the control stays visually light but is
++   comfortably tappable, which matters most for the destructive actions. */
++.t-menu::after {
++  content: ""; position: absolute; top: 50%; left: 50%;
++  width: 44px; height: 44px; transform: translate(-50%, -50%);
++}
++.t-menu:active { background: var(--gray-100); color: var(--purple); }
++.t-right { display: flex; align-items: center; gap: 2px; }
++.pl-row .t-right { gap: 4px; }
++@media (hover: hover) and (pointer: fine) {
++  .t-menu:hover { color: var(--purple); background: var(--gray-100); }
++}
++
++/* ═══════════════════════════════════════════════════════════════
++   v28 — resume + recent searches
++═══════════════════════════════════════════════════════════════ */
++
++/* Resume strip: the fastest possible path back into your listening */
++.resume-strip {
++  display: flex; align-items: center; gap: 10px; width: calc(100% - 36px);
++  margin: 12px 18px 4px; padding: 12px 14px;
++  background: var(--purple-bg); border: 1px solid var(--gray-100);
++  border-radius: var(--r-sm); cursor: pointer; text-align: left;
++  color: var(--purple); font-size: 13px; font-weight: 600;
++}
++.resume-strip i:first-child { font-size: 18px; }
++.resume-strip span { flex: 1; min-width: 0; overflow: hidden;
++  text-overflow: ellipsis; white-space: nowrap; }
++.resume-strip:active { transform: scale(.99); }
++
++/* Recent searches */
++.recent-box { padding: 0 18px 8px; }
++.recent-h {
++  display: flex; align-items: center; justify-content: space-between;
++  font-size: 11px; font-weight: 700; color: var(--gray-400);
++  text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px;
++}
++.recent-clear {
++  border: none; background: none; color: var(--purple);
++  font-size: 11px; font-weight: 700; cursor: pointer; padding: 2px 4px;
++}
++.recent-chips { display: flex; flex-wrap: wrap; gap: 6px; }
++.recent-chip {
++  display: inline-flex; align-items: center; gap: 5px;
++  border: 1px solid var(--gray-200); background: var(--white);
++  border-radius: 16px; padding: 6px 11px;
++  font-size: 12px; color: var(--gray-800); cursor: pointer;
++  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
++}
++.recent-chip i { font-size: 13px; color: var(--gray-400); }
++.recent-chip:active { background: var(--purple-bg); border-color: var(--purple); }
++
++/* ═══════════════════════════════════════════════════════════════
++   v29 — stacking order, stated once so it stops drifting
++
++   The full player is the topmost *surface* in any music app: opening it
++   should cover whatever sheet you came from. Previously .now-screen sat
++   at 450, below .sheet at 500 — so playing an episode from a show sheet
++   and then tapping the mini-player showed you the sheet again, with the
++   player stranded underneath.
++
++   pages 1 · mini-player 400 · sheets 500 · NOW-SCREEN 600
++   · action menus 800 · pickers 820 · text modals 840 · toast 900
++═══════════════════════════════════════════════════════════════ */
++.now-screen  { z-index: 600; }
++.modal-back  { z-index: 800; }
++#add-pl-sheet, #folder-pick-sheet { z-index: 820; }
++#create-pl-modal, #folder-name-modal { z-index: 840; }
++.bulk-bar    { z-index: 700; }
++.toast       { z-index: 900; }
++
++/* ── Back-to-top button ───────────────────────────────────────────────
++   Appears once you've scrolled a page down a screenful or more. Sits just
++   above the mini-player so it never covers playback controls. */
++.to-top {
++  position: fixed;
++  right: 16px;
++  bottom: calc(var(--player-h, 64px) + var(--nav-h, 62px) + 14px);
++  width: 44px; height: 44px; border-radius: 50%;
++  background: var(--grad-brand); color: #fff; border: none;
++  box-shadow: var(--shadow-lg);
++  display: flex; align-items: center; justify-content: center;
++  font-size: 20px; cursor: pointer; z-index: 60;
++  opacity: 0; transform: translateY(12px) scale(.9);
++  pointer-events: none;
++  transition: opacity .2s, transform .2s;
++}
++.to-top.show { opacity: 1; transform: translateY(0) scale(1); pointer-events: auto; }
++.to-top:active { transform: scale(.92); }
++
++/* ═══════════════════════════════════════════════════════════════
++   Touch targets (accessibility + one-handed use)
++
++   Measured: 30 controls rendered smaller than the ~44px comfortable
++   touch floor — icon buttons at 38px, the mini-player's like button at
++   36px, nav items only 30px tall inside a 62px bar. On a phone, in a
++   car, or mid-jog, those are genuinely hard to hit.
++
++   Rather than enlarging the artwork (which would coarsen a deliberately
++   compact design), each control gets an invisible centred hit area via
++   ::after. Visuals are pixel-identical; the tappable region grows.
++═══════════════════════════════════════════════════════════════ */
++/* IMPORTANT: only elements that are position:static belong in this list.
++   An earlier version included .to-top and .pl-card-menu, which are already
++   position:fixed and position:absolute respectively — declaring `relative`
++   here silently overrode them, so the scroll-to-top button fell out of its
++   fixed corner and landed inline on the left, and the album card's ⋮ button
++   left its corner. They still get the enlarged hit area below; `absolute`
++   and `fixed` are positioned ancestors too, so ::after works fine on them. */
++.icon-btn, .mini-like, .mini-play, .mini-next, .mini-prev,
++.lang-pill, .now-act {
++  position: relative;
++}
++.icon-btn::after, .mini-like::after, .mini-play::after, .mini-next::after,
++.mini-prev::after, .to-top::after, .lang-pill::after,
++.pl-card-menu::after, .now-act::after {
++  content: "";
++  position: absolute;
++  top: 50%; left: 50%;
++  width: 46px; height: 46px;
++  transform: translate(-50%, -50%);
++  border-radius: 50%;
++}
++
++/* Nav items were 30px tall in a 62px bar — over half the bar was dead
++   space above and below the label. Stretching each item to fill the bar
++   makes the whole column tappable. (A pseudo-element hit area was tried
++   first and lost the hit test to something painting above it; stretching
++   the real box is simpler and provably works.) */
++.bottom-nav .nav-item {
++  position: relative;
++  align-self: stretch;
++  justify-content: center;
++}
++
++/* Search chips at 28px tall are fiddly; 36px is comfortable without
++   making the row feel heavy. */
++.s-chip { min-height: 36px; }
+diff --git a/static/app.js b/static/app.js
+index 5b70388..7564926 100644
+--- a/static/app.js
++++ b/static/app.js
+@@ -1,7 +1,7 @@
+ /* ═══════════════════════════════════════════════════════════════════════
+    Naada (నాద) — app.js  ·  Production music player
+ ═══════════════════════════════════════════════════════════════════════ */
+-const APP_VERSION = "v22";
++const APP_VERSION = "v42";
+ 
+ /* ── Lightweight diagnostics ─────────────────────────────────────────────
+    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
+@@ -23,7 +23,8 @@ const LS = {
+ /* ── State ──────────────────────────────────────────────────────────────── */
+ const S = {
+   page:       "home",
+-  homeLang:   "hindi",
++  homeLang:   "telugu",   // matches the bootstrap default; overwritten by
++                          // the user's saved defaultLang on init
+   sType:      "songs",
+   queue:      [],
+   queueIdx:   -1,
+@@ -33,8 +34,10 @@ const S = {
+   shuffle:    LS.get("nd_shuffle", false),
+   repeat:     LS.get("nd_repeat",  false),  // false | "all" | "one"
+   liked:      LS.get("nd_liked",   []),
+-  playlists:  LS.get("nd_pls",     []),     // [{id,name,songs:[]}]
++  playlists:  LS.get("nd_pls",     []),     // [{id,name,songs:[],pinned?}]
+   history:    LS.get("nd_history", []),
++  pinned:     LS.get("nd_pinned",  []),     // pinned songs
++  theme:      LS.get("nd_theme",   "auto"), // "auto" | "light" | "dark"
+   sleepTimer: null,
+   sleepEnd:   null,
+   addPlTrack: null,       // track pending add-to-playlist
+@@ -52,8 +55,29 @@ const save = () => {
+   LS.set("nd_history", S.history);
+   LS.set("nd_shuffle", S.shuffle);
+   LS.set("nd_repeat",  S.repeat);
++  LS.set("nd_pinned",  S.pinned);
+ };
+ 
++/* ── Theme (light / auto / dark) ────────────────────────────────────────── */
++const THEME_COLORS = { light: "#4A1A6B", dark: "#120C1A" };
++const _darkMQ = matchMedia("(prefers-color-scheme: dark)");
++
++function applyTheme() {
++  const resolved = S.theme === "dark" || (S.theme === "auto" && _darkMQ.matches)
++    ? "dark" : "light";
++  document.documentElement.dataset.theme = resolved;
++  const meta = document.querySelector('meta[name="theme-color"]');
++  if (meta) meta.content = THEME_COLORS[resolved];
++}
++function setTheme(t) {
++  S.theme = t;
++  LS.set("nd_theme", t);
++  applyTheme();
++}
++// While on "auto", follow live OS scheme changes (sunset auto-switch etc.)
++_darkMQ.addEventListener?.("change", () => { if (S.theme === "auto") applyTheme(); });
++applyTheme();
++
+ /* ── DOM ────────────────────────────────────────────────────────────────── */
+ const $  = id  => document.getElementById(id);
+ const $$ = sel => document.querySelectorAll(sel);
+@@ -61,7 +85,14 @@ const $$ = sel => document.querySelectorAll(sel);
+ /* ── Utility ────────────────────────────────────────────────────────────── */
+ function fmt(s) {
+   if (!s || isNaN(s)) return "--:--";
+-  return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
++  s = Math.floor(s);
++  const two = n => String(n).padStart(2, "0");
++  // Podcasts routinely run past an hour. Without this a 1h52m episode
++  // rendered as "112:10", which reads as nonsense.
++  if (s >= 3600) {
++    return `${Math.floor(s/3600)}:${two(Math.floor(s%3600/60))}:${two(s%60)}`;
++  }
++  return `${Math.floor(s/60)}:${two(s%60)}`;
+ }
+ function esc(s) {
+   return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+@@ -88,7 +119,12 @@ function greeting() {
+ 
+ /* ── Navigation ─────────────────────────────────────────────────────────── */
+ function goto(page) {
++  const from = S.page;
+   S.page = page;
++  // Feed the Android back stack unless we're replaying it
++  if (!window._ndSilentNav && typeof window.ndNavPage === "function") {
++    window.ndNavPage(from, page);
++  }
+   $$(".page").forEach(el => el.classList.remove("active"));
+   $$(".nav-item").forEach(el => el.classList.toggle("active", el.dataset.page === page));
+   $(`page-${page}`).classList.add("active");
+@@ -130,6 +166,9 @@ function trackHTML(t, idx, numbered=true) {
+       <button class="t-like${liked?" liked":""}" data-id="${esc(t.id)}" aria-label="${liked?"Unlike":"Like"}">
+         <i class="ti ti-heart${liked?"-filled":""}"></i>
+       </button>
++      <button class="t-menu" data-menu="${esc(t.id)}" aria-label="More options">
++        <i class="ti ti-dots-vertical"></i>
++      </button>
+     </div>
+   </div>`;
+ }
+@@ -511,14 +550,37 @@ async function play(track, queue=S.queue, idx=-1) {
+   if (S.page === "home") { renderHomeLibraryShelves(); applyShelfVisibility(); }
+ 
+   try {
+-    window.ndlog && window.ndlog(`  fetching /api/song/${track.id}`);
+-    const r = await fetch(`/api/song/${track.id}`);
+-    const d = await r.json();
+-    window.ndlog && window.ndlog(`  got response: url=${(d.url||"").slice(0,40)}`);
++    let d, streamUrl, objectUrl = null;
++    // Best case: the bytes are already sitting in our cache from look-ahead
++    // buffering. This is what plays through a tunnel or dead zone — zero
++    // network, instant start.
++    objectUrl = await bufferedUrl(track.id);
++    if (objectUrl) {
++      window.ndlog && window.ndlog(`playing from byte buffer: ${track.id}`);
++      streamUrl = objectUrl;
++      d = {};
++    } else if (S.nextUrl && S.nextUrl.id === track.id && S.nextUrl.url) {
++      // Next best: we resolved this track's CDN url ahead of time — still
++      // needs network for the bytes, but skips the server round-trip.
++      window.ndlog && window.ndlog(`using prefetched url for ${track.id}`);
++      d = { url: S.nextUrl.url };
++      streamUrl = S.nextUrl.url;
++      S.nextUrl = null;
++    } else {
++      // Resolve through the cache-first helper: this checks the deep URL
++      // cache (populated while awake) before falling back to the server.
++      // During sleep the cache almost always hits, so we don't depend on
++      // the frozen Termux process to advance the queue.
++      const cached = cachedUrl(track.id);
++      window.ndlog && window.ndlog(cached ? `url from cache: ${track.id}` : `fetching /api/song/${track.id}`);
++      streamUrl = await _resolveUrl(track.id);
++      d = { url: streamUrl };
++      window.ndlog && window.ndlog(`got url=${(streamUrl||"").slice(0,40)}`);
++    }
+ 
+-    // Validate stream URL — must be absolute https:// to avoid 404 on local server
+-    const streamUrl = d.url || "";
+-    if (!streamUrl || !streamUrl.startsWith("http")) {
++    // Validate — a blob: URL from the buffer is always fine; otherwise it
++    // must be an absolute http(s) URL.
++    if (!streamUrl || (!streamUrl.startsWith("http") && !streamUrl.startsWith("blob:"))) {
+       window.ndlog && window.ndlog(`  BAD URL: "${streamUrl}"`);
+       throw new Error("no_stream_url");
+     }
+@@ -531,8 +593,16 @@ async function play(track, queue=S.queue, idx=-1) {
+     audio.removeAttribute("src");
+     audio.load();
+ 
++    // Release any previous blob URL so we don't leak memory across tracks
++    if (S._lastObjectUrl) { try { URL.revokeObjectURL(S._lastObjectUrl); } catch {} S._lastObjectUrl = null; }
++
+     audio.src = streamUrl;
+-    audio.crossOrigin = "anonymous";   // needed for some CDN responses
++    if (streamUrl.startsWith("blob:")) {
++      S._lastObjectUrl = streamUrl;      // buffered bytes: no CORS needed
++      audio.removeAttribute("crossorigin");
++    } else {
++      audio.crossOrigin = "anonymous";   // needed for some CDN responses
++    }
+     window.ndlog && window.ndlog(`  audio.src set, calling play()`);
+ 
+     // Wait for enough data, with timeout
+@@ -614,8 +684,8 @@ function updateMediaSession(t) {
+     const set = (action, fn) => {
+       try { navigator.mediaSession.setActionHandler(action, fn); } catch {}
+     };
+-    set("play",  () => { audio.play(); S.playing = true; setPlayIcons(true); vinylPlay(true); patchLists(); });
+-    set("pause", () => { audio.pause(); S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists(); });
++    set("play",  () => { S.wantPlaying = true; audio.play(); S.playing = true; setPlayIcons(true); vinylPlay(true); patchLists(); });
++    set("pause", () => { S.wantPlaying = false; audio.pause(); S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists(); });
+     set("previoustrack", () => playPrev());
+     set("nexttrack",     () => playNext());
+     set("seekto", (d) => { if (d.seekTime != null && audio.duration) audio.currentTime = d.seekTime; });
+@@ -660,6 +730,17 @@ function updateMeta(t) {
+   updateNpLike();
+   const qb = $("queue-badge");
+   if (qb) qb.textContent = `${S.queue.length} song${S.queue.length!==1?"s":""}`;
++
++  // Keep the OS media notification / lock screen in step with the track.
++  // This lives HERE rather than in play() because the gapless fast path
++  // (see the "ended" handler) deliberately bypasses play() to avoid a silent
++  // gap — which meant the notification kept showing the first song's title
++  // for the rest of the queue. updateMeta() is called by every path that
++  // changes track, so it's the correct single home for this.
++  if (typeof updateMediaSession === "function") updateMediaSession(t);
++
++  // Tint the player from the album art (async, fails soft)
++  if (typeof applyArtColors === "function") applyArtColors(t);
+ }
+ 
+ function vinylPlay(playing) {
+@@ -682,8 +763,15 @@ function updateNpLike() {
+ function togglePlay() {
+   if (!S.track) return;
+   if (audio.paused) {
++    S.wantPlaying = true;               // record intent BEFORE the async call
+     audio.play().then(() => { S.playing = true; setPlayIcons(true); vinylPlay(true); patchLists(); });
+   } else {
++    // This is the single funnel for "the user asked to pause" — the on-screen
++    // buttons, the keyboard, and the lock-screen/headphone controls all end up
++    // here. Setting intent at the source (rather than guessing from individual
++    // click handlers) is what stops the background auto-resume from overriding
++    // a deliberate pause a moment later.
++    S.wantPlaying = false;
+     audio.pause(); S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists();
+   }
+ }
+@@ -740,11 +828,112 @@ audio.addEventListener("timeupdate", () => {
+ audio.addEventListener("loadedmetadata", updateMediaPositionState);
+ setInterval(() => { if (!audio.paused) updateMediaPositionState(); }, 1000);
+ 
++/* ═══════════════════════════════════════════════════════════════════════
++   Armed next track — the thing that actually keeps a queue playing when
++   the app is minimised or the screen is off.
++
++   The old chain was: song ends -> playNext() -> play() -> await a URL ->
++   set src -> download and buffer over the network -> finally sound. Every
++   track boundary therefore had a silent gap of unpredictable length, and
++   two bad things happened in it:
++
++     1. A backgrounded tab's network requests can be throttled or deferred
++        indefinitely, so the buffering step may simply never finish.
++     2. While silent, Chrome no longer sees the tab as "playing audio",
++        which is precisely what makes it eligible to be frozen.
++
++   So we now ARM the next track while the current one is still playing:
++   resolve its source ahead of time (a blob from our byte buffer if we
++   have it, else a CDN url warmed into the HTTP cache via a standby
++   element). When `ended` fires we set src and call play() SYNCHRONOUSLY —
++   no await, no fetch, no gap. The tab keeps producing audio continuously,
++   which is both what the user wants and what keeps Chrome from freezing us.
++═══════════════════════════════════════════════════════════════════════ */
++const standby = new Audio();          // warms the HTTP cache only; never audible
++standby.preload = "auto";
++standby.volume  = 0;
++S.armed = null;                       // { id, src, isBlob }
++
++function nextTrackInQueue() {
++  if (!S.queue?.length) return null;
++  if (S.shuffle) return null;                       // random: can't know next
++  const i = S.queueIdx + 1;
++  if (i < S.queue.length) return S.queue[i];
++  if (S.repeat === "all") return S.queue[0];        // wrap around
++  return null;
++}
++
++async function armNext() {
++  try {
++    if (S.repeat === "one") { S.armed = null; return; }
++    const nxt = nextTrackInQueue();
++    if (!nxt) { S.armed = null; return; }
++    // Already armed for this exact track, and the source is still fresh?
++    // (Signed CDN urls expire, so an old arm must be rebuilt.)
++    if (S.armed?.id === nxt.id && Date.now() - (S.armed.at || 0) < URL_TTL) return;
++
++    // Prefer bytes we already hold: a blob plays with literally no network.
++    let src = await bufferedUrl(nxt.id);
++    const isBlob = !!src;
++    if (!src) src = await _resolveUrl(nxt.id);
++    if (!src) return;
++
++    // Only warm the standby element when the byte buffer missed — otherwise
++    // we'd download the same song twice and waste mobile data.
++    if (!isBlob) {
++      try { standby.src = src; standby.load(); } catch {}
++    }
++    S.armed = { id: nxt.id, src, isBlob, at: Date.now() };
++    window.ndlog && window.ndlog(`armed next: ${nxt.title} (${isBlob ? "bytes" : "url"})`);
++  } catch { /* arming is best-effort; the slow path still works */ }
++}
++
+ audio.addEventListener("ended", () => {
+   if (S.repeat === "one") { audio.currentTime = 0; audio.play(); return; }
++
++  const nxt = nextTrackInQueue();
++  if (nxt && S.armed && S.armed.id === nxt.id) {
++    // ── FAST PATH: fully synchronous, so there is no silent gap ──────────
++    const idx = (S.queueIdx + 1 < S.queue.length) ? S.queueIdx + 1 : 0;
++    const src = S.armed.src;
++    S.armed = null;
++
++    if (S._lastObjectUrl) { try { URL.revokeObjectURL(S._lastObjectUrl); } catch {} S._lastObjectUrl = null; }
++    audio.src = src;
++    if (src.startsWith("blob:")) { S._lastObjectUrl = src; audio.removeAttribute("crossorigin"); }
++    else { audio.crossOrigin = "anonymous"; }
++
++    const p = audio.play();            // called first: nothing delays the audio
++
++    // Everything below is bookkeeping and can happen after sound resumes.
++    S.track = nxt;
++    S.queueIdx = idx;
++    S.playing = true;
++    S.wantPlaying = true;
++    updateMeta(nxt);
++    setPlayIcons(true);
++    vinylPlay(true);
++    S.history = [nxt, ...S.history.filter(t => t.id !== nxt.id)].slice(0, 60);
++    save();
++    patchLists();
++
++    if (p && p.catch) p.catch(() => play(nxt, S.queue, idx));   // retry properly
++    setTimeout(armNext,   1200);
++    setTimeout(fillBuffer, 2500);
++    return;
++  }
++
++  // ── SLOW PATH: nothing armed (shuffle, or arming hadn't finished) ──────
+   if (S.repeat === "all" || S.queueIdx < S.queue.length - 1) { playNext(); return; }
+   S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists();
+ });
++
++// Arm early enough that even a short track is ready before it ends.
++audio.addEventListener("playing", () => setTimeout(armNext, 6000));
++// Note: we deliberately do NOT clear the arm on `loadstart`. That fires on
++// our own fast-path swap and on error retries, and clearing there fought the
++// re-arm timer. armNext() already invalidates precisely — by comparing the
++// armed id against the real next track, and by age (below).
+ audio.addEventListener("waiting", () => $("player-loader").classList.add("vis"));
+ audio.addEventListener("canplay", () => $("player-loader").classList.remove("vis"));
+ audio.addEventListener("error",   () => { _skipErrors++; toast("Stream error — skipping"); setTimeout(playNext, 900); });
+@@ -848,25 +1037,70 @@ function renderLibrary() {
+   }
+ }
+ 
++/* A playlist/album cover that actually distinguishes one from another.
++   Four+ artworks → a 2×2 mosaic. One to three → the first, full-bleed.
++   Empty → a coloured tile with the album's initial, seeded from its name
++   so each empty album gets its own colour instead of an identical gradient
++   with a music note. */
++const COVER_HUES = [265, 330, 350, 20, 190, 160, 290, 220];
++
++function playlistCover(pl) {
++  const arts = [];
++  for (const s of (pl.songs || [])) {
++    if (s.image && !arts.includes(s.image)) arts.push(s.image);
++    if (arts.length === 4) break;
++  }
++  if (arts.length >= 4) {
++    return `<div class="cover-quad">${
++      arts.map(a => `<img src="${esc(a)}" alt="" loading="lazy">`).join("")}</div>`;
++  }
++  if (arts.length >= 1) {
++    return `<img src="${esc(arts[0])}" alt="" loading="lazy">`;
++  }
++  // Empty: deterministic colour + initial, so it reads as *this* album
++  const name = (pl.name || "?").trim();
++  let h = 0;
++  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
++  const hue = COVER_HUES[h % COVER_HUES.length];
++  const initial = esc(name.charAt(0).toUpperCase() || "♪");
++  return `<div class="cover-initial" style="--h:${hue}">${initial}</div>`;
++}
++
+ function renderPlaylists() {
+   const grid = $("playlist-grid");
+-  if (!S.playlists.length) {
+-    grid.innerHTML = `<div style="grid-column:1/-1"><div class="state-msg" style="padding:20px"><i class="ti ti-playlist"></i><p>No playlists yet</p></div></div>`;
++  if (typeof renderFolders === "function") renderFolders();
++  const items = typeof visiblePlaylists === "function" ? visiblePlaylists() : S.playlists;
++
++  if (!items.length) {
++    const inFolder = typeof S !== "undefined" && S.viewFolder;
++    grid.innerHTML = `<div style="grid-column:1/-1"><div class="state-msg" style="padding:20px">
++      <i class="ti ti-playlist"></i>
++      <p>${inFolder
++          ? "This folder is empty.<br>Drag an album onto it, or use ⋮ → Move to folder."
++          : (S.playlists.length ? "Every album is filed in a folder." : "No albums or playlists yet")}</p>
++    </div></div>`;
+     return;
+   }
+-  grid.innerHTML = S.playlists.map(pl => {
+-    const first = pl.songs?.[0];
++
++  // Pinned playlists always sort to the top
++  const ordered = [...items].sort((a,b) => (b.pinned?1:0) - (a.pinned?1:0));
++  grid.innerHTML = ordered.map(pl => {
+     return `<div class="pl-card" data-plid="${esc(pl.id)}">
+-      <div class="pl-card-img">
+-        ${first?.image ? `<img src="${esc(first.image)}" alt="">` : "🎵"}
+-      </div>
++      <button class="pl-card-menu" data-plmenu="${esc(pl.id)}" aria-label="Album options"><i class="ti ti-dots"></i></button>
++      ${pl.pinned ? `<span class="pin-badge"><i class="ti ti-pin-filled"></i></span>` : ""}
++      <div class="pl-card-img">${playlistCover(pl)}</div>
+       <div class="pl-card-name">${esc(pl.name)}</div>
+       <div class="pl-card-count">${pl.songs.length} song${pl.songs.length!==1?"s":""}</div>
+     </div>`;
+   }).join("");
+   grid.querySelectorAll(".pl-card[data-plid]").forEach(el =>
+-    el.addEventListener("click", () => openPlaylistDetail(el.dataset.plid))
++    el.addEventListener("click", e => {
++      const menuBtn = e.target.closest(".pl-card-menu");
++      if (menuBtn) { e.stopPropagation(); openPlMenu(menuBtn.dataset.plmenu); return; }
++      openPlaylistDetail(el.dataset.plid);
++    })
+   );
++  if (typeof initAlbumDragToFolder === "function") initAlbumDragToFolder();
+ }
+ 
+ $("liked-shuffle").addEventListener("click", () => {
+@@ -908,6 +1142,9 @@ $("new-playlist-btn").addEventListener("click", () => {
+ });
+ 
+ $("pl-create-confirm").addEventListener("click", () => {
++  // Rename mode and create-from-selection mode are handled by their own
++  // listeners (registered later, so they run after this one) — bail here.
++  if (S.renamePlId || S.newPlWithTracks) return;
+   const name = $("pl-name-input").value.trim();
+   if (!name) return;
+   S.playlists.unshift({ id: uid(), name, songs: [] });
+@@ -924,13 +1161,20 @@ function openPlaylistDetail(plid) {
+   if (!pl) return;
+   S.viewPlId = plid;
+   S.plEditMode = false;
+-  const et = $("pl-edit-toggle"); if (et) et.textContent = "Edit";
++  S.plSel = new Set();
++  const et = $("pl-edit-toggle"); if (et) et.textContent = "Select";
++  const bar = $("bulk-bar"); if (bar) bar.classList.remove("show");
++  const rh = $("pl-reorder-hint"); if (rh) rh.style.display = "none";
+   $("pl-detail-title").textContent = pl.name;
+   renderPlaylistDetail(pl);
+   $("pl-detail-sheet").classList.add("open");
+ }
+ 
+-$("pl-detail-close").addEventListener("click", () => $("pl-detail-sheet").classList.remove("open"));
++$("pl-detail-close").addEventListener("click", () => {
++  $("pl-detail-sheet").classList.remove("open");
++  S.plEditMode = false; S.plSel = new Set();
++  const bar = $("bulk-bar"); if (bar) bar.classList.remove("show");
++});
+ 
+ $("pl-play-all").addEventListener("click", () => {
+   const pl = S.playlists.find(p => p.id === S.viewPlId);
+@@ -969,16 +1213,56 @@ $("np-add-pl").addEventListener("click", () => {
+   openAddToPlaylist();
+ });
+ 
+-function openAddToPlaylist() {
++/* Single-track mode: uses S.addPlTrack (legacy callers unchanged).
++   Bulk mode: pass { bulk: tracks[], mode: "copy"|"move" } — "move" also
++   removes the tracks from the currently-open playlist. This is how you
++   curate a new collection out of an existing one. */
++function openAddToPlaylist(bulkOpts = null) {
++  S.addPlBulk = bulkOpts;
+   const list = $("pl-select-list");
+-  if (!S.playlists.length) {
+-    list.innerHTML = `<div class="state-msg"><i class="ti ti-playlist"></i><p>No playlists yet.<br>Create one in Library.</p></div>`;
++  // In bulk mode, don't offer the playlist we're moving/copying from
++  const targets = bulkOpts
++    ? S.playlists.filter(p => p.id !== S.viewPlId)
++    : S.playlists;
++
++  const finish = (pl, added) => {
++    // "move" removes the originals from the source playlist
++    if (bulkOpts?.mode === "move") {
++      const src = S.playlists.find(p => p.id === S.viewPlId);
++      if (src) {
++        const ids = new Set(bulkOpts.bulk.map(t => t.id));
++        src.songs = src.songs.filter(s => !ids.has(s.id));
++        renderPlaylistDetail(src);
++      }
++      S.plSel = new Set(); updateBulkBar();
++    }
++    S.playlists = [pl, ...S.playlists.filter(p => p.id !== pl.id)];
++    save(); $("add-pl-sheet").classList.remove("open");
++    S.addPlBulk = null;
++    touchShelf("playlists");
++    renderHomeLibraryShelves();
++    if (S.page === "library") renderLibrary();
++    const verb = bulkOpts?.mode === "move" ? "Moved" : "Added";
++    toast(added ? `${verb} ${added} song${added!==1?"s":""} to "${pl.name}"` : `Already in "${pl.name}"`);
++  };
++
++  const addTracksTo = pl => {
++    const tracks = bulkOpts ? bulkOpts.bulk : (S.addPlTrack ? [S.addPlTrack] : []);
++    let added = 0;
++    for (const t of tracks) {
++      if (!pl.songs.some(s => s.id === t.id)) { pl.songs.push({...t}); added++; }
++    }
++    finish(pl, added);
++  };
++  S._addTracksTo = addTracksTo;   // used by the "+ New" flow below
++
++  if (!targets.length) {
++    list.innerHTML = `<div class="state-msg"><i class="ti ti-playlist"></i><p>No other playlists yet.<br>Tap + to create one${bulkOpts ? " from your selection" : ""}.</p></div>`;
+   } else {
+-    list.innerHTML = S.playlists.map(pl => {
+-      const first = pl.songs?.[0];
++    list.innerHTML = targets.map(pl => {
+       return `<div class="pl-select-item" data-plid="${esc(pl.id)}">
+         <div class="pl-select-thumb">
+-          ${first?.image ? `<img src="${esc(first.image)}" alt="">` : "🎵"}
++          ${playlistCover(pl)}
+         </div>
+         <div>
+           <div class="pl-select-name">${esc(pl.name)}</div>
+@@ -989,15 +1273,7 @@ function openAddToPlaylist() {
+     list.querySelectorAll(".pl-select-item").forEach(el => {
+       el.addEventListener("click", () => {
+         const pl = S.playlists.find(p => p.id === el.dataset.plid);
+-        if (!pl || !S.addPlTrack) return;
+-        if (pl.songs.some(s => s.id === S.addPlTrack.id)) { toast("Already in this playlist"); return; }
+-        pl.songs.push({...S.addPlTrack});
+-        // Surface the just-updated playlist: move it to the front + float shelf
+-        S.playlists = [pl, ...S.playlists.filter(p => p.id !== pl.id)];
+-        save(); $("add-pl-sheet").classList.remove("open");
+-        touchShelf("playlists");
+-        renderHomeLibraryShelves();
+-        toast(`Added to "${pl.name}"`);
++        if (pl) addTracksTo(pl);
+       });
+     });
+   }
+@@ -1099,17 +1375,20 @@ async function openLyrics() {
+   }
+ }
+ 
+-$("btn-lyrics").addEventListener("click", openLyrics);
++// Lyrics can be opened from the now-playing screen (np-lyrics wired below)
+ $("lyrics-close").addEventListener("click", () => $("lyrics-sheet").classList.remove("open"));
+ 
+-/* ── Sleep timer ─────────────────────────────────────────────────────────── */
+-$("btn-sleep").addEventListener("click", () => {
++/* ── Sleep timer ─────────────────────────────────────────────────────────
++   Opened from the now-playing header's moon button. It's a playback control,
++   so it lives with playback rather than cluttering the global app header. */
++function openSleepModal() {
+   if (S.sleepEnd) {
+     const rem = Math.ceil((S.sleepEnd - Date.now()) / 60000);
+     toast(`Sleep timer: ${rem} min left`);
+   }
+   $("sleep-modal").classList.add("open");
+-});
++}
++$("sleep-btn")?.addEventListener("click", openSleepModal);
+ $("sleep-dismiss").addEventListener("click", () => $("sleep-modal").classList.remove("open"));
+ 
+ $$(".modal-opt[data-mins]").forEach(el => {
+@@ -1117,15 +1396,17 @@ $$(".modal-opt[data-mins]").forEach(el => {
+     $("sleep-modal").classList.remove("open");
+     const mins = parseInt(el.dataset.mins);
+     clearTimeout(S.sleepTimer); S.sleepEnd = null;
+-    if (mins === 0) { toast("Sleep timer cancelled"); return; }
++    const chip = $("sleep-btn");
++    if (mins === 0) { toast("Sleep timer cancelled"); chip?.classList.remove("active"); return; }
+     S.sleepEnd = Date.now() + mins * 60000;
+     S.sleepTimer = setTimeout(() => {
+       audio.pause(); S.playing = false;
+       setPlayIcons(false);
+       vinylPlay(false); S.sleepEnd = null;
++      chip?.classList.remove("active");
+       toast("Sleep timer — goodnight 🌙", 4000);
+     }, mins * 60000);
+-    $("btn-sleep").classList.add("active");
++    chip?.classList.add("active");
+     toast(`Sleep timer: ${mins} min`);
+   });
+ });
+@@ -1151,6 +1432,7 @@ if ("serviceWorker" in navigator) {
+ 
+ /* ── Home settings (which shelves show, default lang) ────────────────────── */
+ const SHELF_DEFS = [
++  { id:"pinned",       label:"Pinned songs",           personal:true },
+   { id:"recents",      label:"Jump back in (recents)", personal:true },
+   { id:"liked",        label:"Your liked songs",       personal:true },
+   { id:"playlists",    label:"Your playlists",          personal:true },
+@@ -1168,6 +1450,10 @@ if (!S.homeCfg.shelves.includes("chartbusters")) {
+   else S.homeCfg.shelves.push("chartbusters");
+   LS.set("nd_homecfg", S.homeCfg);
+ }
++if (!S.homeCfg.shelves.includes("pinned")) {
++  S.homeCfg.shelves.unshift("pinned");
++  LS.set("nd_homecfg", S.homeCfg);
++}
+ // Per-shelf "last touched" times — personal shelves float to the top when used.
+ S.shelfTouch = LS.get("nd_shelf_touch", {});
+ 
+@@ -1212,7 +1498,15 @@ function applyShelfVisibility() {
+   // 1) Toggle visibility per saved config
+   for (const def of SHELF_DEFS) {
+     const el = $("shelf-" + def.id);
+-    if (el) el.style.display = S.homeCfg.shelves.includes(def.id) ? "" : "none";
++    if (!el) continue;
++    let show = S.homeCfg.shelves.includes(def.id);
++    // Personal shelves with nothing in them are just a header over dead
++    // space — hide them until they have something to say.
++    if (def.id === "pinned"    && !S.pinned.length)    show = false;
++    if (def.id === "liked"     && !S.liked.length)     show = false;
++    if (def.id === "playlists" && !S.playlists.length) show = false;
++    if (def.id === "recents"   && !S.history.length)   show = false;
++    el.style.display = show ? "" : "none";
+   }
+   // 2) Order: personal shelves first (most-recently-touched on top),
+   //    then discovery shelves in their natural order. This is what makes a
+@@ -1231,6 +1525,31 @@ function applyShelfVisibility() {
+ }
+ 
+ function renderHomeLibraryShelves() {
++  // Pinned songs — the shelf hides itself entirely when nothing is pinned,
++  // so it never nags; pinning a first song makes it appear at the top.
++  const pinShelf = $("shelf-pinned"), pinRow = $("home-pinned");
++  if (pinShelf && pinRow) {
++    if (S.pinned.length && S.homeCfg.shelves.includes("pinned")) {
++      pinShelf.style.display = "";
++      pinRow.innerHTML = S.pinned.map(t =>
++        `<div class="mini-card" data-id="${esc(t.id)}">
++           <div class="mini-card-img" style="position:relative">
++             ${t.image?`<img src="${esc(t.image)}" alt="">`:"🎵"}
++             <span class="pin-badge"><i class="ti ti-pin-filled"></i></span>
++           </div>
++           <div class="mini-card-title">${esc(t.title)}</div>
++           <div class="mini-card-sub">${esc(t.artist||"")}</div>
++         </div>`).join("");
++      pinRow.querySelectorAll(".mini-card[data-id]").forEach(el =>
++        el.addEventListener("click", () => {
++          const t = S.pinned.find(x => x.id === el.dataset.id);
++          if (t) play(t, S.pinned, S.pinned.indexOf(t));
++        }));
++    } else {
++      pinShelf.style.display = "none";
++    }
++  }
++
+   // Recents
+   const rec = $("home-recents");
+   if (rec) {
+@@ -1272,9 +1591,8 @@ function renderHomeLibraryShelves() {
+   if (pl) {
+     if (S.playlists.length) {
+       pl.innerHTML = S.playlists.slice(0,12).map(p => {
+-        const first = p.songs?.[0];
+         return `<div class="mini-card" data-plid="${esc(p.id)}">
+-           <div class="mini-card-img pl">${first?.image?`<img src="${esc(first.image)}" alt="">`:"🎵"}</div>
++           <div class="mini-card-img pl">${playlistCover(p)}</div>
+            <div class="mini-card-title">${esc(p.name)}</div>
+            <div class="mini-card-sub">${p.songs.length} songs</div>
+          </div>`;
+@@ -1353,6 +1671,16 @@ function openHomeSettings() {
+       LS.set("nd_homecfg", S.homeCfg);
+       applyShelfVisibility();
+     }));
++  // Theme picker
++  const seg = $("theme-seg");
++  if (seg) {
++    const sync = () => seg.querySelectorAll(".seg-opt").forEach(b =>
++      b.classList.toggle("active", b.dataset.themeOpt === S.theme));
++    sync();
++    seg.querySelectorAll(".seg-opt").forEach(b => {
++      b.onclick = () => { setTheme(b.dataset.themeOpt); sync(); };
++    });
++  }
+   const sel = $("settings-default-lang");
+   if (sel) {
+     sel.value = S.homeCfg.defaultLang || "telugu";
+@@ -1381,6 +1709,7 @@ const aboutOpen = $("about-open");
+ if (aboutOpen) aboutOpen.addEventListener("click", () => {
+   $("home-settings-sheet").classList.remove("open");
+   $("about-sheet").classList.add("open");
++  if (typeof renderInstallState === "function") renderInstallState();
+ });
+ const aboutClose = $("about-close");
+ if (aboutClose) aboutClose.addEventListener("click", () => $("about-sheet").classList.remove("open"));
+@@ -1404,6 +1733,7 @@ $("now-close").addEventListener("click", closeNowScreen);
+ $("now-queue-btn").addEventListener("click", () => { closeNowScreen(); goto("queue"); });
+ 
+ $("mini-play").addEventListener("click", e => { e.stopPropagation(); togglePlay(); });
++$("mini-prev")?.addEventListener("click", e => { e.stopPropagation(); playPrev(); });
+ $("mini-next").addEventListener("click", e => { e.stopPropagation(); playNext(); });
+ $("mini-like").addEventListener("click", e => { e.stopPropagation(); if (S.track) toggleLike(S.track.id, [S.track]); });
+ 
+@@ -1506,66 +1836,122 @@ function renderPlaylistDetail(pl) {
+     list.innerHTML = `<div class="state-msg"><i class="ti ti-playlist"></i><p>No songs yet.<br>Add songs from the now-playing screen.</p></div>`;
+     return;
+   }
++  const sel = S.plSel || new Set();
+   list.innerHTML = pl.songs.map((t,i) =>
+-    `<div class="track pl-row${S.track?.id===t.id?" now":""}" data-idx="${i}" data-id="${esc(t.id)}">
+-       <span class="t-num">${i+1}</span>
++    `<div class="track pl-row${S.track?.id===t.id?" now":""}${S.plEditMode && sel.has(t.id)?" selected":""}" data-idx="${i}" data-id="${esc(t.id)}">
++       ${S.plEditMode
++         ? `<span class="pl-grip" aria-label="Drag to reorder"><i class="ti ti-grip-vertical"></i></span>
++            <span class="sel-box"><i class="ti ti-check"></i></span>`
++         : `<span class="t-num">${i+1}</span>`}
+        <div class="t-img">${t.image?`<img src="${esc(t.image)}" alt="" loading="lazy">`:'<span class="t-img-ph">🎵</span>'}</div>
+        <div class="t-info"><div class="t-title">${esc(t.title)}</div><div class="t-meta">${esc(t.artist||"")}</div></div>
+-       ${S.plEditMode
+-         ? `<button class="q-remove" data-rm="${i}" aria-label="Remove"><i class="ti ti-x"></i></button>`
+-         : `<span class="t-dur">${fmt(t.duration)}</span>`}
++       <div class="t-right">
++         <span class="t-dur">${fmt(t.duration)}</span>
++         ${S.plEditMode ? "" : `<button class="t-menu" data-menu="${esc(t.id)}" aria-label="More options"><i class="ti ti-dots-vertical"></i></button>`}
++       </div>
+      </div>`).join("");
+ 
+   list.querySelectorAll(".pl-row").forEach(row => {
+     row.addEventListener("click", e => {
+-      if (e.target.closest(".q-remove")) return;
++      if (e.target.closest(".pl-grip")) return;   // grip is for dragging
++      if (e.target.closest(".t-menu")) return;    // handled by the menu binding
+       const i = parseInt(row.dataset.idx);
+-      if (!isNaN(i) && pl.songs[i]) play(pl.songs[i], pl.songs, i);
+-    });
+-  });
+-  list.querySelectorAll(".q-remove").forEach(btn => {
+-    btn.addEventListener("click", e => {
+-      e.stopPropagation();
+-      const i = parseInt(btn.dataset.rm);
+-      pl.songs.splice(i,1);
+-      save();
+-      renderPlaylistDetail(pl);
+-      renderHomeLibraryShelves();
++      if (isNaN(i) || !pl.songs[i]) return;
++      if (S.plEditMode) {
++        // Edit mode: tapping toggles selection instead of playing
++        const id = pl.songs[i].id;
++        if (sel.has(id)) sel.delete(id); else sel.add(id);
++        S.plSel = sel;
++        row.classList.toggle("selected", sel.has(id));
++        updateBulkBar();
++      } else {
++        play(pl.songs[i], pl.songs, i);
++      }
+     });
+   });
++
++  // Reordering is available in Select mode (see initPlaylistReorder)
++  if (typeof initPlaylistReorder === "function") initPlaylistReorder(pl);
++}
++
++/* ── Bulk bar: shown while songs are selected in playlist edit mode ─────── */
++function updateBulkBar() {
++  const bar = $("bulk-bar");
++  const n = S.plSel ? S.plSel.size : 0;
++  $("bulk-count").textContent = `${n} selected`;
++  bar.classList.toggle("show", S.plEditMode && n > 0);
+ }
+ 
++function bulkSelectedTracks() {
++  const pl = S.playlists.find(p => p.id === S.viewPlId);
++  if (!pl || !S.plSel) return [];
++  return pl.songs.filter(s => S.plSel.has(s.id));
++}
++
++$("bulk-remove").addEventListener("click", () => {
++  const pl = S.playlists.find(p => p.id === S.viewPlId);
++  if (!pl || !S.plSel?.size) return;
++  const n = S.plSel.size;
++  pl.songs = pl.songs.filter(s => !S.plSel.has(s.id));
++  S.plSel.clear();
++  save(); renderPlaylistDetail(pl); renderHomeLibraryShelves(); updateBulkBar();
++  toast(`Removed ${n} song${n!==1?"s":""}`);
++});
++
++$("bulk-copy").addEventListener("click", () => {
++  const tracks = bulkSelectedTracks();
++  if (!tracks.length) return;
++  openAddToPlaylist({ bulk: tracks, mode: "copy" });
++});
++
++$("bulk-move").addEventListener("click", () => {
++  const tracks = bulkSelectedTracks();
++  if (!tracks.length) return;
++  openAddToPlaylist({ bulk: tracks, mode: "move" });
++});
++
+ const plEditToggle = $("pl-edit-toggle");
+ if (plEditToggle) plEditToggle.addEventListener("click", () => {
+   S.plEditMode = !S.plEditMode;
+-  plEditToggle.textContent = S.plEditMode ? "Done" : "Edit";
++  S.plSel = new Set();
++  plEditToggle.textContent = S.plEditMode ? "Done" : "Select";
++  const hint = $("pl-reorder-hint");
++  if (hint) hint.style.display = S.plEditMode ? "flex" : "none";
+   const pl = S.playlists.find(p => p.id === S.viewPlId);
+   if (pl) renderPlaylistDetail(pl);
++  updateBulkBar();
+ });
+ 
++// ⋮ on the playlist detail sheet opens the proper action sheet
+ const plMenu = $("pl-detail-menu");
+ if (plMenu) plMenu.addEventListener("click", () => {
+-  const pl = S.playlists.find(p => p.id === S.viewPlId);
+-  if (!pl) return;
+-  const choice = prompt(`Playlist "${pl.name}"\n\nType: rename  |  delete  |  cancel`, "rename");
+-  if (choice === "rename") {
+-    const name = prompt("New playlist name:", pl.name);
+-    if (name && name.trim()) { pl.name = name.trim(); save(); $("pl-detail-title").textContent = pl.name; renderLibrary(); toast("Renamed"); }
+-  } else if (choice === "delete") {
+-    S.playlists = S.playlists.filter(p => p.id !== pl.id);
+-    save(); $("pl-detail-sheet").classList.remove("open"); renderLibrary(); renderHomeLibraryShelves();
+-    toast(`"${pl.name}" deleted`);
+-  }
++  if (S.viewPlId) openPlMenu(S.viewPlId);
+ });
+ 
+ // New-playlist button inside add-to-playlist sheet
+ const addPlNew = $("add-pl-new");
+ if (addPlNew) addPlNew.addEventListener("click", () => {
+   $("add-pl-sheet").classList.remove("open");
++  S.newPlWithTracks = true;   // route the create-confirm into the add flow
+   $("create-pl-modal").classList.add("open");
+   setTimeout(() => $("pl-name-input")?.focus(), 100);
+ });
+ 
++// Capture-phase: when creating from the add-to-playlist flow, the new
++// playlist is born already containing the pending track(s)/selection.
++$("pl-create-confirm").addEventListener("click", e => {
++  if (!S.newPlWithTracks || S.renamePlId) return;
++  e.stopImmediatePropagation();
++  S.newPlWithTracks = false;
++  const name = $("pl-name-input").value.trim();
++  if (!name) return;
++  const pl = { id: uid(), name, songs: [] };
++  S.playlists.unshift(pl);
++  $("create-pl-modal").classList.remove("open");
++  if (S._addTracksTo) S._addTracksTo(pl);
++  else { save(); renderPlaylists(); toast(`Playlist "${name}" created`); }
++}, true);
++
+ /* ── Home see-all shortcuts ──────────────────────────────────────────────── */
+ const homeLikedMore = $("home-liked-more");
+ if (homeLikedMore) homeLikedMore.addEventListener("click", () => goto("library"));
+@@ -1707,6 +2093,8 @@ const BACKUP_KEYS = [
+   "nd_liked", "nd_pls", "nd_history", "nd_homecfg",
+   "nd_shuffle", "nd_repeat", "nd_ai_anecdote",
+   "nd_shelf_touch", "nd_collapsed",
++  "nd_pinned", "nd_theme", "nd_folders",
++  "nd_playcounts", "nd_recent_searches", "nd_resume",
+ ];
+ 
+ function exportData() {
+@@ -1845,3 +2233,1968 @@ if (triviaRefresh) triviaRefresh.addEventListener("click", () => loadTrivia(true
+   loadNewReleases(dl);
+   loadHomeShelves(dl);
+ })();
++
++/* ═══════════════════════════════════════════════════════════════════════
++   v23: Track context menu (long-press), pins, playlist action sheet,
++        bulk move/copy, queue back nav, audio-state sync
++═══════════════════════════════════════════════════════════════════════ */
++
++/* ── Pin helpers ─────────────────────────────────────────────────────────── */
++function isPinned(id) { return S.pinned.some(t => t.id === id); }
++
++function togglePin(track) {
++  if (!track) return;
++  if (isPinned(track.id)) {
++    S.pinned = S.pinned.filter(t => t.id !== track.id);
++    toast("Unpinned");
++  } else {
++    S.pinned = [{...track}, ...S.pinned].slice(0, 24);
++    toast("Pinned to Home");
++    touchShelf("pinned");
++  }
++  save();
++  renderHomeLibraryShelves();
++  applyShelfVisibility();
++}
++
++/* ── Queue helpers ───────────────────────────────────────────────────────── */
++function queuePlayNext(track) {
++  if (!track) return;
++  // Remove any existing copy, then insert right after the current song
++  S.queue = S.queue.filter(t => t.id !== track.id);
++  const at = Math.min(S.queueIdx + 1, S.queue.length);
++  S.queue.splice(at, 0, {...track});
++  S.queueIdx = S.queue.findIndex(t => t.id === S.track?.id);
++  toast(`Playing next: ${track.title}`);
++  if (S.page === "queue") renderQueueEditable();
++}
++
++function queueAddLast(track) {
++  if (!track) return;
++  if (S.queue.some(t => t.id === track.id)) { toast("Already in queue"); return; }
++  S.queue.push({...track});
++  toast("Added to queue");
++  if (S.page === "queue") renderQueueEditable();
++}
++
++/* ── Track context menu ──────────────────────────────────────────────────
++   Long-press any song row, anywhere in the app, for a contextual action
++   sheet. What "Remove" means depends on where you pressed:
++   liked list → unlike · history → remove from history · playlist → remove
++   from that playlist · queue → remove from queue. */
++const trackMenu = $("track-menu");
++
++function tmContextOf(row) {
++  // Walk up from the row to figure out which list it lives in
++  if (row.closest("#liked-list"))     return "liked";
++  if (row.closest("#home-liked"))     return "liked";
++  if (row.closest("#history-list"))   return "history";
++  if (row.closest("#home-recents"))   return "history";
++  if (row.closest("#pl-detail-list")) return "playlist";
++  if (row.closest("#queue-list"))     return "queue";
++  if (row.closest("#home-pinned"))    return "pinned";
++  return "browse";
++}
++
++function tmFindTrack(id, ctx) {
++  const pools = {
++    liked:    [S.liked],
++    history:  [S.history],
++    pinned:   [S.pinned],
++    queue:    [S.queue],
++    playlist: [S.playlists.find(p => p.id === S.viewPlId)?.songs || []],
++    browse:   [S.queue, S.history, S.liked],
++  }[ctx] || [];
++  for (const pool of pools) {
++    const t = pool.find(x => x.id === id);
++    if (t) return t;
++  }
++  // Fall back to any rendered list registry entry
++  for (const el of document.querySelectorAll("[id]")) {
++    const list = _listRegistry.get(el);
++    const t = list && list.find(x => x.id === id);
++    if (t) return t;
++  }
++  return null;
++}
++
++function openTrackMenu(track, ctx) {
++  if (!track) return;
++  S.tmTrack = track; S.tmCtx = ctx;
++
++  // Header
++  $("tm-title").textContent  = track.title  || "—";
++  $("tm-artist").textContent = track.artist || "";
++  $("tm-art").innerHTML = track.image
++    ? `<img src="${esc(track.image)}" alt="">` : "🎵";
++
++  const liked  = isLiked(track.id);
++  const pinned = isPinned(track.id);
++  const removeLabel = {
++    liked:    { icon: "ti-heart-off", text: "Remove from Liked" },
++    history:  { icon: "ti-eraser",    text: "Remove from history" },
++    playlist: { icon: "ti-playlist-x",text: "Remove from this playlist" },
++    queue:    { icon: "ti-list-details", text: "Remove from queue" },
++    pinned:   null,   // pin toggle already covers it
++    browse:   null,
++  }[ctx];
++
++  const opts = [
++    { act:"playnext", icon:"ti-player-track-next", text:"Play next" },
++    { act:"addqueue", icon:"ti-playlist-add",      text:"Add to queue" },
++    { act:"addpl",    icon:"ti-folder-plus",       text:"Add to playlist…" },
++    { act:"like",     icon: liked ? "ti-heart-off" : "ti-heart",
++                      text: liked ? "Unlike" : "Like" },
++    { act:"pin",      icon: pinned ? "ti-pin-off" : "ti-pin",
++                      text: pinned ? "Unpin from Home" : "Pin to Home" },
++    { act:"radio",    icon:"ti-radio",             text:"Start radio from this" },
++  ];
++  if (removeLabel) opts.push({ act:"remove", icon:removeLabel.icon, text:removeLabel.text, danger:true });
++
++  $("tm-opts").innerHTML = opts.map(o =>
++    `<div class="modal-opt${o.danger?" danger":""}" data-act="${o.act}">
++       <i class="ti ${o.icon}"></i>${o.text}
++     </div>`).join("");
++
++  trackMenu.classList.add("open");
++}
++
++function closeTrackMenu() { trackMenu.classList.remove("open"); }
++$("tm-cancel").addEventListener("click", closeTrackMenu);
++trackMenu.addEventListener("click", e => { if (e.target === trackMenu) closeTrackMenu(); });
++
++$("tm-opts").addEventListener("click", async e => {
++  const opt = e.target.closest(".modal-opt[data-act]");
++  if (!opt) return;
++  const t = S.tmTrack, ctx = S.tmCtx;
++  closeTrackMenu();
++  if (!t) return;
++
++  switch (opt.dataset.act) {
++    case "playnext": queuePlayNext(t); break;
++    case "addqueue": queueAddLast(t); break;
++    case "addpl":
++      S.addPlTrack = t;
++      openAddToPlaylist();
++      break;
++    case "like": toggleLike(t.id, [t]); break;
++    case "pin":  togglePin(t); break;
++    case "radio":
++      toast("Building radio…");
++      try {
++        const r = await fetch(`/api/radio?song_id=${t.id}&lang=${S.homeLang}`);
++        const d = await r.json();
++        if (d.songs?.length) {
++          S.queue = [t, ...d.songs]; S.queueIdx = 0;
++          play(t, S.queue, 0);
++        } else toast("No radio available");
++      } catch { toast("Radio failed"); }
++      break;
++    case "remove":
++      if (ctx === "liked") {
++        S.liked = S.liked.filter(x => x.id !== t.id);
++        save(); patchLists(); updateNpLike();
++        if (S.page === "library") renderLibrary();
++        renderHomeLibraryShelves(); toast("Removed from Liked");
++      } else if (ctx === "history") {
++        S.history = S.history.filter(x => x.id !== t.id);
++        save();
++        if (S.page === "library") renderLibrary();
++        renderHomeLibraryShelves(); toast("Removed from history");
++      } else if (ctx === "playlist") {
++        const pl = S.playlists.find(p => p.id === S.viewPlId);
++        if (pl) {
++          pl.songs = pl.songs.filter(x => x.id !== t.id);
++          save(); renderPlaylistDetail(pl); renderHomeLibraryShelves();
++          toast(`Removed from "${pl.name}"`);
++        }
++      } else if (ctx === "queue") {
++        const i = S.queue.findIndex(x => x.id === t.id);
++        if (i !== -1) {
++          S.queue.splice(i, 1);
++          if (i < S.queueIdx) S.queueIdx--;
++          if (S.page === "queue") renderQueueEditable();
++          toast("Removed from queue");
++        }
++      }
++      break;
++  }
++});
++
++/* ── Long-press detection (touch + mouse), delegated on document ─────────── */
++(function initLongPress() {
++  const HOLD_MS = 480, MOVE_TOL = 12;
++  let timer = null, startX = 0, startY = 0, row = null, fired = false;
++
++  function clear() {
++    clearTimeout(timer); timer = null;
++    if (row) row.classList.remove("pressing");
++    row = null;
++  }
++
++  document.addEventListener("pointerdown", e => {
++    const r = e.target.closest(".track[data-id], .mini-card[data-id]");
++    if (!r) return;
++    // Skip interactive children — like button, grip, remove
++    if (e.target.closest("button, .q-grip")) return;
++    row = r; fired = false;
++    startX = e.clientX; startY = e.clientY;
++    row.classList.add("pressing");
++    timer = setTimeout(() => {
++      fired = true;
++      const ctx = tmContextOf(row);
++      const track = tmFindTrack(row.dataset.id, ctx);
++      if (track) {
++        if (navigator.vibrate) { try { navigator.vibrate(12); } catch {} }
++        openTrackMenu(track, ctx);
++      }
++      clear();
++    }, HOLD_MS);
++  }, { passive: true });
++
++  document.addEventListener("pointermove", e => {
++    if (!timer) return;
++    if (Math.abs(e.clientX - startX) > MOVE_TOL || Math.abs(e.clientY - startY) > MOVE_TOL) clear();
++  }, { passive: true });
++
++  document.addEventListener("pointerup", clear, { passive: true });
++  document.addEventListener("pointercancel", clear, { passive: true });
++
++  // Swallow the click that follows a fired long-press so the song
++  // doesn't also start playing underneath the menu
++  document.addEventListener("click", e => {
++    if (fired) { e.stopPropagation(); e.preventDefault(); fired = false; }
++  }, true);
++
++  // Desktop: right-click a row opens the same menu
++  document.addEventListener("contextmenu", e => {
++    const r = e.target.closest(".track[data-id], .mini-card[data-id]");
++    if (!r) return;
++    e.preventDefault();
++    const ctx = tmContextOf(r);
++    const track = tmFindTrack(r.dataset.id, ctx);
++    if (track) openTrackMenu(track, ctx);
++  });
++})();
++
++/* ── Playlist action sheet (replaces the old prompt()) ───────────────────── */
++const plMenuSheet = $("pl-menu");
++
++function openPlMenu(plid) {
++  const pl = S.playlists.find(p => p.id === plid);
++  if (!pl) return;
++  S.plMenuId = plid;
++  $("pl-menu-title").textContent = pl.name;
++  $("pl-menu-opts").innerHTML = `
++    <div class="modal-opt" data-plact="movefolder"><i class="ti ti-folder-symlink"></i>Move to folder…</div>
++    <div class="modal-opt" data-plact="rename"><i class="ti ti-pencil"></i>Rename</div>
++    <div class="modal-opt" data-plact="duplicate"><i class="ti ti-copy"></i>Duplicate</div>
++    <div class="modal-opt" data-plact="pin"><i class="ti ti-pin${pl.pinned?"-off":""}"></i>${pl.pinned?"Unpin":"Pin to top"}</div>
++    <div class="modal-opt" data-plact="playnext"><i class="ti ti-player-track-next"></i>Queue all songs</div>
++    <div class="modal-opt danger" data-plact="delete"><i class="ti ti-trash"></i>Delete album</div>`;
++  plMenuSheet.classList.add("open");
++}
++function closePlMenu() { plMenuSheet.classList.remove("open"); }
++$("pl-menu-cancel").addEventListener("click", closePlMenu);
++plMenuSheet.addEventListener("click", e => { if (e.target === plMenuSheet) closePlMenu(); });
++
++$("pl-menu-opts").addEventListener("click", e => {
++  const opt = e.target.closest(".modal-opt[data-plact]");
++  if (!opt) return;
++  const pl = S.playlists.find(p => p.id === S.plMenuId);
++  closePlMenu();
++  if (!pl) return;
++
++  switch (opt.dataset.plact) {
++    case "movefolder":
++      if (typeof openFolderPicker === "function") openFolderPicker(pl.id);
++      break;
++    case "rename": {
++      // Reuse the create-playlist modal in rename mode
++      S.renamePlId = pl.id;
++      $("create-pl-title").textContent = "Rename Playlist";
++      $("pl-create-confirm").textContent = "Save";
++      const inp = $("pl-name-input");
++      inp.value = pl.name;
++      $("create-pl-modal").classList.add("open");
++      setTimeout(() => { inp.focus(); inp.select(); }, 100);
++      break;
++    }
++    case "duplicate": {
++      const copy = { id: uid(), name: `${pl.name} copy`, songs: pl.songs.map(s => ({...s})) };
++      S.playlists.splice(S.playlists.indexOf(pl) + 1, 0, copy);
++      save(); renderPlaylists(); renderHomeLibraryShelves();
++      toast(`Duplicated as "${copy.name}"`);
++      break;
++    }
++    case "pin": {
++      pl.pinned = !pl.pinned;
++      save(); renderPlaylists(); renderHomeLibraryShelves();
++      toast(pl.pinned ? "Playlist pinned" : "Playlist unpinned");
++      break;
++    }
++    case "playnext": {
++      if (!pl.songs.length) { toast("Playlist is empty"); break; }
++      for (const s of pl.songs) if (!S.queue.some(q => q.id === s.id)) S.queue.push({...s});
++      S.queueIdx = S.queue.findIndex(t => t.id === S.track?.id);
++      toast(`Queued ${pl.songs.length} songs`);
++      break;
++    }
++    case "delete": {
++      if (!confirm(`Delete "${pl.name}"? This can't be undone.`)) break;
++      S.playlists = S.playlists.filter(p => p.id !== pl.id);
++      // Drop it out of any folder too, so counts stay honest
++      if (S.folders) {
++        for (const f of S.folders) f.plIds = f.plIds.filter(id => id !== pl.id);
++        saveFolders();
++      }
++      save();
++      $("pl-detail-sheet").classList.remove("open");
++      renderLibrary(); renderHomeLibraryShelves();
++      toast(`"${pl.name}" deleted`);
++      break;
++    }
++  }
++});
++
++/* Rename mode: hook into the existing create-confirm handler via capture,
++   so the original "create" behaviour is skipped when we're renaming. */
++$("pl-create-confirm").addEventListener("click", e => {
++  if (!S.renamePlId) return;              // normal create flow
++  e.stopImmediatePropagation();           // don't run the create handler
++  const pl = S.playlists.find(p => p.id === S.renamePlId);
++  const name = $("pl-name-input").value.trim();
++  S.renamePlId = null;
++  $("create-pl-title").textContent = "New Playlist";
++  $("pl-create-confirm").textContent = "Create Playlist";
++  if (pl && name) {
++    pl.name = name;
++    save();
++    $("pl-detail-title").textContent = name;
++    renderPlaylists(); renderHomeLibraryShelves();
++    toast("Renamed");
++  }
++  $("create-pl-modal").classList.remove("open");
++}, true);
++$("pl-create-cancel").addEventListener("click", () => {
++  S.renamePlId = null;
++  $("create-pl-title").textContent = "New Playlist";
++  $("pl-create-confirm").textContent = "Create Playlist";
++});
++
++/* ── Queue back button (queue left the nav bar) ──────────────────────────── */
++const qBack = $("queue-back");
++if (qBack) qBack.addEventListener("click", () => goto("home"));
++
++/* ── Audio ↔ UI state sync ───────────────────────────────────────────────
++   The OS can pause/resume audio without touching our buttons (phone call,
++   audio-focus loss, media notification, bluetooth controls). Listening to
++   the element itself keeps every play icon truthful. */
++audio.addEventListener("play",  () => { S.playing = true;  setPlayIcons(true);  vinylPlay(true);  patchLists(); });
++audio.addEventListener("pause", () => {
++  // Ignore the pause that fires while switching tracks
++  if (S.loading) return;
++  S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists();
++});
++document.addEventListener("visibilitychange", () => {
++  if (!document.hidden) {   // resync after returning from background
++    S.playing = !audio.paused && !!audio.src;
++    setPlayIcons(S.playing); vinylPlay(S.playing);
++  }
++});
++
++/* ═══════════════════════════════════════════════════════════════════════
++   v24: dynamic album colour, mini-player swipe, playlist drag-reorder
++═══════════════════════════════════════════════════════════════════════ */
++
++/* ── Dynamic colour from album art ───────────────────────────────────────
++   Samples the artwork on a tiny offscreen canvas and derives two tones for
++   the now-playing wash. Cached per image URL. Cross-origin art can taint
++   the canvas — that throws, we catch, and the default gradient stays. */
++const _artColorCache = new Map();
++
++function _clampTone(r, g, b) {
++  // Push very light / very dark samples toward a usable mid-tone so the
++  // wash always reads against the text, in either theme.
++  const lum = (0.299*r + 0.587*g + 0.114*b) / 255;
++  let f = 1;
++  if (lum > 0.72) f = 0.72 / lum;
++  if (lum < 0.16) f = 1.5;
++  return [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v * f))));
++}
++
++function extractArtColors(url) {
++  if (!url) return Promise.resolve(null);
++  if (_artColorCache.has(url)) return Promise.resolve(_artColorCache.get(url));
++
++  return new Promise(resolve => {
++    const img = new Image();
++    img.crossOrigin = "anonymous";
++    const done = val => { _artColorCache.set(url, val); resolve(val); };
++    img.onerror = () => done(null);
++    img.onload = () => {
++      try {
++        const N = 16;                       // tiny sample grid — fast, plenty
++        const c = document.createElement("canvas");
++        c.width = c.height = N;
++        const ctx = c.getContext("2d", { willReadFrequently: true });
++        ctx.drawImage(img, 0, 0, N, N);
++        const px = ctx.getImageData(0, 0, N, N).data;
++
++        // Average the most saturated pixels — averaging everything gives mud
++        let best = [], rs = 0, gs = 0, bs = 0, n = 0;
++        for (let i = 0; i < px.length; i += 4) {
++          const r = px[i], g = px[i+1], b = px[i+2];
++          const mx = Math.max(r,g,b), mn = Math.min(r,g,b);
++          best.push({ r, g, b, sat: mx - mn });
++        }
++        best.sort((a, b2) => b2.sat - a.sat);
++        for (const p of best.slice(0, Math.max(6, best.length >> 2))) {
++          rs += p.r; gs += p.g; bs += p.b; n++;
++        }
++        if (!n) return done(null);
++        const [r, g, b] = _clampTone(rs/n, gs/n, bs/n);
++        done({
++          a: `rgba(${r},${g},${b},.55)`,
++          b: `rgba(${r},${g},${b},.18)`,
++          edge: `rgba(${r},${g},${b},.45)`,
++        });
++      } catch { done(null); }   // tainted canvas / CORS — fall back quietly
++    };
++    img.src = url;
++  });
++}
++
++async function applyArtColors(track) {
++  const now  = $("now-screen");
++  const mini = $("mini-player");
++  const clear = () => {
++    now.classList.remove("tinted");
++    mini.classList.remove("tinted");
++  };
++  if (!track?.image) { clear(); return; }
++
++  const col = await extractArtColors(track.image);
++  // The song may have changed while we were sampling — don't paint stale colour
++  if (!col || S.track?.image !== track.image) { if (!col) clear(); return; }
++
++  now.style.setProperty("--art-1", col.a);
++  now.style.setProperty("--art-2", col.b);
++  now.classList.add("tinted");
++  mini.style.setProperty("--art-1", col.edge);
++  mini.classList.add("tinted");
++}
++
++/* ── Mini-player swipe ───────────────────────────────────────────────────
++   Swipe left → next, right → previous, up → open the full player.
++   Horizontal intent is locked in before we start moving so a vertical
++   page scroll that begins on the bar still scrolls the page. */
++(function initMiniSwipe() {
++  const bar = $("mini-player");
++  if (!bar) return;
++
++  const SKIP_PX = 68, OPEN_PX = 46, LOCK_PX = 10;
++  let x0 = 0, y0 = 0, dx = 0, dy = 0;
++  let active = false, axis = null, id = null;
++
++  const reset = () => {
++    bar.classList.remove("swiping", "hint-next", "hint-prev");
++    bar.style.transform = "";
++    bar.style.opacity = "";
++    active = false; axis = null; id = null; dx = dy = 0;
++  };
++
++  bar.addEventListener("pointerdown", e => {
++    if (e.target.closest(".mini-btn")) return;   // let the buttons work
++    if (!S.track) return;
++    active = true; axis = null; id = e.pointerId;
++    x0 = e.clientX; y0 = e.clientY; dx = dy = 0;
++  }, { passive: true });
++
++  bar.addEventListener("pointermove", e => {
++    if (!active || e.pointerId !== id) return;
++    dx = e.clientX - x0;
++    dy = e.clientY - y0;
++
++    if (!axis) {
++      if (Math.abs(dx) > LOCK_PX || Math.abs(dy) > LOCK_PX) {
++        axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
++        if (axis === "x") { bar.classList.add("swiping"); bar.setPointerCapture(id); }
++        else if (dy > 0) { reset(); return; }   // downward — let the page scroll
++        else { bar.classList.add("swiping"); bar.setPointerCapture(id); }
++      }
++      return;
++    }
++
++    if (axis === "x") {
++      bar.style.transform = `translateX(${dx * 0.85}px)`;
++      bar.style.opacity = String(Math.max(0.45, 1 - Math.abs(dx) / 260));
++      bar.classList.toggle("hint-next", dx < -SKIP_PX * 0.6);
++      bar.classList.toggle("hint-prev", dx >  SKIP_PX * 0.6);
++    } else {
++      const up = Math.min(0, dy);
++      bar.style.transform = `translateY(${up * 0.5}px)`;
++    }
++  }, { passive: true });
++
++  function finish() {
++    if (!active) return;
++    const _dx = dx, _dy = dy, _axis = axis;
++    bar.classList.add("settling");
++    bar.classList.remove("swiping");
++
++    if (_axis === "x" && Math.abs(_dx) > SKIP_PX) {
++      // Fling the bar off, then swap the track and let it spring back
++      bar.style.transform = `translateX(${_dx > 0 ? 340 : -340}px)`;
++      bar.style.opacity = "0";
++      setTimeout(() => {
++        _dx > 0 ? playPrev() : playNext();
++        bar.classList.remove("settling");
++        bar.style.transform = `translateX(${_dx > 0 ? -60 : 60}px)`;
++        bar.style.opacity = "0";
++        requestAnimationFrame(() => {
++          bar.classList.add("settling");
++          bar.style.transform = "";
++          bar.style.opacity = "";
++        });
++      }, 170);
++    } else if (_axis === "y" && _dy < -OPEN_PX) {
++      bar.style.transform = "";
++      bar.style.opacity = "";
++      openNowScreen();
++    } else {
++      bar.style.transform = "";
++      bar.style.opacity = "";
++    }
++
++    setTimeout(() => bar.classList.remove("settling"), 320);
++    active = false; axis = null; id = null;
++    bar.classList.remove("hint-next", "hint-prev");
++  }
++
++  bar.addEventListener("pointerup", finish, { passive: true });
++  bar.addEventListener("pointercancel", reset, { passive: true });
++
++  // A swipe shouldn't also register as a tap that opens the player
++  bar.addEventListener("click", e => {
++    if (Math.abs(dx) > LOCK_PX || Math.abs(dy) > LOCK_PX) {
++      e.stopImmediatePropagation(); e.preventDefault();
++      dx = dy = 0;
++    }
++  }, true);
++})();
++
++/* ── Playlist drag-to-reorder ────────────────────────────────────────────
++   Reordering is enabled in Select mode, where rows already aren't
++   play-on-tap, so dragging can't fight with playback. */
++function initPlaylistReorder(pl) {
++  const list = $("pl-detail-list");
++  if (!list || !S.plEditMode) return;
++  let from = null;
++
++  list.querySelectorAll(".pl-row").forEach(row => {
++    row.setAttribute("draggable", "true");
++    row.addEventListener("dragstart", e => {
++      from = parseInt(row.dataset.idx);
++      row.classList.add("dragging");
++      try { e.dataTransfer.effectAllowed = "move"; } catch {}
++    });
++    row.addEventListener("dragend", () => { row.classList.remove("dragging"); from = null; });
++    row.addEventListener("dragover", e => { e.preventDefault(); row.classList.add("drag-over"); });
++    row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
++    row.addEventListener("drop", e => {
++      e.preventDefault();
++      row.classList.remove("drag-over");
++      const to = parseInt(row.dataset.idx);
++      if (from === null || isNaN(to) || from === to) return;
++      const [moved] = pl.songs.splice(from, 1);
++      pl.songs.splice(to, 0, moved);
++      save();
++      renderPlaylistDetail(pl);
++      renderHomeLibraryShelves();
++    });
++
++    // Touch: long-press the grip then drag, mirroring the queue screen
++    const grip = row.querySelector(".pl-grip");
++    if (!grip) return;
++    grip.addEventListener("pointerdown", ev => {
++      ev.preventDefault();
++      const startIdx = parseInt(row.dataset.idx);
++      row.classList.add("dragging");
++      const rows = [...list.querySelectorAll(".pl-row")];
++
++      const onMove = m => {
++        const el = document.elementFromPoint(m.clientX, m.clientY)?.closest(".pl-row");
++        rows.forEach(r => r.classList.toggle("drag-over", r === el && r !== row));
++      };
++      const onUp = m => {
++        document.removeEventListener("pointermove", onMove);
++        document.removeEventListener("pointerup", onUp);
++        row.classList.remove("dragging");
++        const el = document.elementFromPoint(m.clientX, m.clientY)?.closest(".pl-row");
++        rows.forEach(r => r.classList.remove("drag-over"));
++        const to = el ? parseInt(el.dataset.idx) : NaN;
++        if (!isNaN(to) && to !== startIdx) {
++          const [moved] = pl.songs.splice(startIdx, 1);
++          pl.songs.splice(to, 0, moved);
++          save();
++          renderPlaylistDetail(pl);
++          renderHomeLibraryShelves();
++        }
++      };
++      document.addEventListener("pointermove", onMove);
++      document.addEventListener("pointerup", onUp);
++    });
++  });
++}
++
++/* ═══════════════════════════════════════════════════════════════════════
++   v25: Folders — group albums/playlists, drag one onto a folder to file it
++   Deliberately one level deep. Deep trees are where personal libraries go
++   to die; a single shelf layer covers "all my Ram Charan albums together"
++   without turning the Library into a file manager.
++═══════════════════════════════════════════════════════════════════════ */
++
++S.folders    = LS.get("nd_folders", []);   // [{id,name,plIds:[]}]
++S.viewFolder = null;                        // null = root
++
++function saveFolders() { LS.set("nd_folders", S.folders); }
++
++function folderOf(plid) {
++  return S.folders.find(f => f.plIds.includes(plid)) || null;
++}
++
++function movePlaylistToFolder(plid, folderId) {
++  // A playlist lives in at most one folder — pull it out of any other first
++  for (const f of S.folders) f.plIds = f.plIds.filter(id => id !== plid);
++  if (folderId) {
++    const f = S.folders.find(x => x.id === folderId);
++    if (f && !f.plIds.includes(plid)) f.plIds.push(plid);
++  }
++  saveFolders();
++}
++
++function createFolder(name, withPlaylist = null) {
++  const f = { id: uid(), name: name.trim(), plIds: [] };
++  S.folders.unshift(f);
++  if (withPlaylist) movePlaylistToFolder(withPlaylist, f.id);
++  saveFolders();
++  return f;
++}
++
++/* ── Render folders + the playlists for the current level ────────────── */
++function renderFolders() {
++  const grid = $("folder-grid");
++  const crumb = $("pl-crumb");
++  const title = $("pl-sec-title");
++  if (!grid) return;
++
++  if (S.viewFolder) {
++    // Inside a folder: hide the folder grid, show the breadcrumb
++    const f = S.folders.find(x => x.id === S.viewFolder);
++    if (!f) { S.viewFolder = null; return renderFolders(); }
++    grid.innerHTML = "";
++    if (crumb) {
++      crumb.style.display = "flex";
++      $("crumb-name").textContent = f.name;
++    }
++    if (title) title.textContent = "In this folder";
++    return;
++  }
++
++  if (crumb) crumb.style.display = "none";
++  if (title) title.textContent = "Albums & Playlists";
++
++  if (!S.folders.length) { grid.innerHTML = ""; return; }
++  grid.innerHTML = S.folders.map(f => {
++    const albums = f.plIds
++      .map(id => S.playlists.find(p => p.id === id))
++      .filter(Boolean);
++    const n = albums.length;
++
++    // Cover: pull the first artwork from up to four albums inside. A folder
++    // full of Ram Charan albums now shows those posters, not a blank icon.
++    const arts = [];
++    for (const pl of albums) {
++      const img = pl.songs?.find(s => s.image)?.image;
++      if (img) arts.push(img);
++      if (arts.length === 4) break;
++    }
++
++    let cover;
++    if (arts.length >= 4) {
++      cover = `<div class="folder-cover quad">${
++        arts.slice(0,4).map(a => `<img src="${esc(a)}" alt="" loading="lazy">`).join("")}</div>`;
++    } else if (arts.length >= 1) {
++      // 1–3 covers: show the first full-bleed rather than an awkward grid
++      cover = `<div class="folder-cover single"><img src="${esc(arts[0])}" alt="" loading="lazy"></div>`;
++    } else {
++      cover = `<div class="folder-cover empty"><i class="ti ti-folder-filled"></i></div>`;
++    }
++
++    return `<div class="folder-card" data-folder="${esc(f.id)}">
++      ${cover}
++      <div class="folder-meta">
++        <div class="folder-name">${esc(f.name)}</div>
++        <div class="folder-count">${n} album${n!==1?"s":""}</div>
++      </div>
++    </div>`;
++  }).join("");
++
++  grid.querySelectorAll(".folder-card").forEach(el => {
++    el.addEventListener("click", () => {
++      S.viewFolder = el.dataset.folder;
++      renderFolders(); renderPlaylists();
++    });
++    // Long-press a folder for its options
++    let t = null;
++    el.addEventListener("pointerdown", () => {
++      t = setTimeout(() => openFolderMenu(el.dataset.folder), 480);
++    }, { passive: true });
++    const cancel = () => { clearTimeout(t); t = null; };
++    el.addEventListener("pointerup", cancel, { passive: true });
++    el.addEventListener("pointermove", cancel, { passive: true });
++    el.addEventListener("pointercancel", cancel, { passive: true });
++  });
++}
++
++/* Which playlists show at the current level */
++function visiblePlaylists() {
++  if (S.viewFolder) {
++    const f = S.folders.find(x => x.id === S.viewFolder);
++    if (!f) return S.playlists;
++    return S.playlists.filter(p => f.plIds.includes(p.id));
++  }
++  // Root shows only playlists that aren't filed in a folder
++  const filed = new Set(S.folders.flatMap(f => f.plIds));
++  return S.playlists.filter(p => !filed.has(p.id));
++}
++
++/* ── Breadcrumb controls ─────────────────────────────────────────────── */
++const crumbBack = $("crumb-back");
++if (crumbBack) crumbBack.addEventListener("click", () => {
++  S.viewFolder = null; renderFolders(); renderPlaylists();
++});
++const crumbMenu = $("crumb-menu");
++if (crumbMenu) crumbMenu.addEventListener("click", () => {
++  if (S.viewFolder) openFolderMenu(S.viewFolder);
++});
++
++/* ── Folder action sheet ─────────────────────────────────────────────── */
++function openFolderMenu(fid) {
++  const f = S.folders.find(x => x.id === fid);
++  if (!f) return;
++  S.menuFolderId = fid;
++  $("folder-menu-title").textContent = f.name;
++  $("folder-menu-opts").innerHTML = `
++    <div class="modal-opt" data-fact="open"><i class="ti ti-folder-open"></i>Open folder</div>
++    <div class="modal-opt" data-fact="rename"><i class="ti ti-pencil"></i>Rename folder</div>
++    <div class="modal-opt" data-fact="playall"><i class="ti ti-player-play"></i>Play everything inside</div>
++    <div class="modal-opt danger" data-fact="delete"><i class="ti ti-folder-x"></i>Delete folder (keeps albums)</div>`;
++  $("folder-menu").classList.add("open");
++}
++$("folder-menu-cancel").addEventListener("click", () => $("folder-menu").classList.remove("open"));
++$("folder-menu").addEventListener("click", e => {
++  if (e.target === $("folder-menu")) $("folder-menu").classList.remove("open");
++});
++
++$("folder-menu-opts").addEventListener("click", e => {
++  const opt = e.target.closest(".modal-opt[data-fact]");
++  if (!opt) return;
++  const f = S.folders.find(x => x.id === S.menuFolderId);
++  $("folder-menu").classList.remove("open");
++  if (!f) return;
++
++  switch (opt.dataset.fact) {
++    case "open":
++      S.viewFolder = f.id; renderFolders(); renderPlaylists();
++      break;
++    case "rename":
++      S.renameFolderId = f.id;
++      $("folder-name-title").textContent = "Rename Folder";
++      $("folder-name-confirm").textContent = "Save";
++      $("folder-name-input").value = f.name;
++      $("folder-name-modal").classList.add("open");
++      setTimeout(() => { const i = $("folder-name-input"); i.focus(); i.select(); }, 100);
++      break;
++    case "playall": {
++      const songs = [];
++      for (const id of f.plIds) {
++        const pl = S.playlists.find(p => p.id === id);
++        if (pl) for (const s of pl.songs) if (!songs.some(x => x.id === s.id)) songs.push({...s});
++      }
++      if (!songs.length) { toast("Nothing in this folder yet"); break; }
++      S.queue = songs; S.queueIdx = 0;
++      play(songs[0], songs, 0);
++      toast(`Playing ${songs.length} songs from "${f.name}"`);
++      break;
++    }
++    case "delete":
++      // Deleting a folder never deletes music — the albums return to the top level
++      if (!confirm(`Delete the folder "${f.name}"?\n\nThe albums inside stay in your library.`)) break;
++      S.folders = S.folders.filter(x => x.id !== f.id);
++      saveFolders();
++      if (S.viewFolder === f.id) S.viewFolder = null;
++      renderFolders(); renderPlaylists();
++      toast(`Folder deleted — albums kept`);
++      break;
++  }
++});
++
++/* ── Create / rename folder modal ────────────────────────────────────── */
++function openNewFolder(withPlaylist = null) {
++  S.renameFolderId = null;
++  S.newFolderFor = withPlaylist;
++  $("folder-name-title").textContent = "New Folder";
++  $("folder-name-confirm").textContent = "Create Folder";
++  $("folder-name-input").value = "";
++  $("folder-name-modal").classList.add("open");
++  setTimeout(() => $("folder-name-input").focus(), 100);
++}
++const newFolderBtn = $("new-folder-btn");
++if (newFolderBtn) newFolderBtn.addEventListener("click", () => openNewFolder());
++
++$("folder-name-cancel").addEventListener("click", () => {
++  $("folder-name-modal").classList.remove("open");
++  S.renameFolderId = null; S.newFolderFor = null;
++});
++$("folder-name-input").addEventListener("keydown", e => {
++  if (e.key === "Enter") $("folder-name-confirm").click();
++});
++$("folder-name-confirm").addEventListener("click", () => {
++  const name = $("folder-name-input").value.trim();
++  if (!name) return;
++  if (S.renameFolderId) {
++    const f = S.folders.find(x => x.id === S.renameFolderId);
++    if (f) { f.name = name; saveFolders(); toast("Folder renamed"); }
++    S.renameFolderId = null;
++  } else {
++    createFolder(name, S.newFolderFor);
++    toast(S.newFolderFor ? `Moved into "${name}"` : `Folder "${name}" created`);
++    S.newFolderFor = null;
++    $("folder-pick-sheet").classList.remove("open");
++  }
++  $("folder-name-modal").classList.remove("open");
++  renderFolders(); renderPlaylists();
++});
++
++/* ── "Move to folder" picker ─────────────────────────────────────────── */
++function openFolderPicker(plid) {
++  S.movePlId = plid;
++  const list = $("folder-pick-list");
++  const current = folderOf(plid);
++  const rows = [];
++
++  if (current) {
++    rows.push(`<div class="pl-select-item" data-fid="">
++      <div class="pl-select-thumb" style="background:var(--gray-200);color:var(--gray-600)"><i class="ti ti-folder-off"></i></div>
++      <div><div class="pl-select-name">Remove from "${esc(current.name)}"</div>
++      <div class="pl-select-count">Back to the top level</div></div></div>`);
++  }
++  for (const f of S.folders) {
++    if (current && f.id === current.id) continue;
++    const n = f.plIds.length;
++    rows.push(`<div class="pl-select-item" data-fid="${esc(f.id)}">
++      <div class="pl-select-thumb"><i class="ti ti-folder-filled"></i></div>
++      <div><div class="pl-select-name">${esc(f.name)}</div>
++      <div class="pl-select-count">${n} album${n!==1?"s":""}</div></div></div>`);
++  }
++
++  list.innerHTML = rows.length ? rows.join("")
++    : `<div class="state-msg"><i class="ti ti-folder"></i><p>No folders yet.<br>Tap + to make one.</p></div>`;
++
++  list.querySelectorAll(".pl-select-item").forEach(el => {
++    el.addEventListener("click", () => {
++      const fid = el.dataset.fid || null;
++      movePlaylistToFolder(S.movePlId, fid);
++      $("folder-pick-sheet").classList.remove("open");
++      renderFolders(); renderPlaylists();
++      toast(fid ? "Moved to folder" : "Moved out of folder");
++    });
++  });
++  $("folder-pick-sheet").classList.add("open");
++}
++$("folder-pick-close").addEventListener("click", () => $("folder-pick-sheet").classList.remove("open"));
++$("folder-pick-new").addEventListener("click", () => openNewFolder(S.movePlId));
++
++/* ── Drag an album card onto a folder to file it ─────────────────────
++   Touch-first: press and hold an album, a ghost follows your finger, and
++   folders light up as you pass over them. Mouse users get the same via
++   pointer events, so there's one code path to keep honest. */
++function initAlbumDragToFolder() {
++  const grid = $("playlist-grid");
++  if (!grid || grid._dragBound) return;
++  grid._dragBound = true;
++
++  const HOLD = 420, MOVE_TOL = 14;
++  let timer = null, card = null, ghost = null, dragging = false;
++  let sx = 0, sy = 0, plid = null;
++
++  const cleanup = () => {
++    clearTimeout(timer); timer = null;
++    if (ghost) { ghost.remove(); ghost = null; }
++    if (card) card.classList.remove("dragging-card");
++    document.querySelectorAll(".folder-card.drop-hot").forEach(f => f.classList.remove("drop-hot"));
++    document.removeEventListener("pointermove", onDocMove);
++    document.removeEventListener("pointerup", onDocUp);
++    document.removeEventListener("pointercancel", cleanup);
++    card = null; dragging = false; plid = null;
++  };
++
++  const makeGhost = (fromCard, x, y) => {
++    const img = fromCard.querySelector(".pl-card-img img");
++    ghost = document.createElement("div");
++    ghost.className = "drag-ghost";
++    ghost.innerHTML = img ? `<img src="${img.src}" alt="">` : `<div class="ph"></div>`;
++    ghost.style.left = x + "px";
++    ghost.style.top  = y + "px";
++    document.body.appendChild(ghost);
++  };
++
++  // Tracked on document, not the grid: once the finger crosses out of the
++  // album grid and over a folder card the grid stops seeing pointer events,
++  // which is exactly when we most need them.
++  function onDocMove(e) {
++    if (!card) return;
++    if (!dragging) {
++      if (Math.abs(e.clientX - sx) > MOVE_TOL || Math.abs(e.clientY - sy) > MOVE_TOL) cleanup();
++      return;
++    }
++    e.preventDefault?.();
++    if (ghost) { ghost.style.left = e.clientX + "px"; ghost.style.top = e.clientY + "px"; }
++    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest(".folder-card");
++    document.querySelectorAll(".folder-card").forEach(f =>
++      f.classList.toggle("drop-hot", f === over));
++  }
++
++  function onDocUp(e) {
++    if (!dragging) { cleanup(); return; }
++    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest(".folder-card");
++    const targetId = over?.dataset.folder || null;
++    const droppedPl = plid;
++    cleanup();
++    if (targetId && droppedPl) {
++      const f = S.folders.find(x => x.id === targetId);
++      movePlaylistToFolder(droppedPl, targetId);
++      renderFolders(); renderPlaylists();
++      toast(`Moved into "${f ? f.name : "folder"}"`);
++    }
++  }
++
++  grid.addEventListener("pointerdown", e => {
++    const c = e.target.closest(".pl-card[data-plid]");
++    if (!c || e.target.closest(".pl-card-menu")) return;
++    card = c; plid = c.dataset.plid;
++    sx = e.clientX; sy = e.clientY;
++    document.addEventListener("pointermove", onDocMove, { passive: false });
++    document.addEventListener("pointerup", onDocUp, { passive: true });
++    document.addEventListener("pointercancel", cleanup, { passive: true });
++    timer = setTimeout(() => {
++      // Only worth dragging if there's somewhere to drop
++      if (!S.folders.length) { cleanup(); return; }
++      dragging = true;
++      card.classList.add("dragging-card");
++      makeGhost(card, sx, sy);
++      if (navigator.vibrate) { try { navigator.vibrate(14); } catch {} }
++    }, HOLD);
++  }, { passive: true });
++
++  // Suppress the click that would otherwise open the album after a drag
++  grid.addEventListener("click", e => {
++    if (dragging) { e.stopImmediatePropagation(); e.preventDefault(); }
++  }, true);
++}
++
++/* ── Library settings entry point (Appearance lives here too now) ────── */
++const libSet = $("btn-lib-settings");
++if (libSet) libSet.addEventListener("click", openHomeSettings);
++
++/* ═══════════════════════════════════════════════════════════════════════
++   v25: playback resilience + install awareness
++═══════════════════════════════════════════════════════════════════════ */
++
++/* ── Stream recovery ─────────────────────────────────────────────────
++   On a phone-hosted app the network drops in and out. If the stream dies
++   while the user still wants audio, re-attach the source and seek back to
++   where we were, rather than silently stopping. We only do this when the
++   user's intent is "playing" — an OS pause (phone call, audio focus lost)
++   must be respected, not fought. */
++S.wantPlaying = false;
++let _recoverTries = 0;
++
++audio.addEventListener("playing", () => { _recoverTries = 0; S.wantPlaying = true; });
++
++function tryRecoverStream() {
++  if (!S.wantPlaying || !S.track || S.loading) return;
++  if (_recoverTries >= 2) return;              // don't loop forever
++  if (!audio.src) return;
++  _recoverTries++;
++  const at = audio.currentTime || 0;
++  const src = audio.src;
++  window.ndlog && window.ndlog(`stream recovery attempt ${_recoverTries} @${at.toFixed(1)}s`);
++  try {
++    audio.load();
++    audio.src = src;
++    audio.currentTime = at;
++    audio.play().catch(() => {});
++  } catch {}
++}
++
++audio.addEventListener("error",   () => setTimeout(tryRecoverStream, 800));
++audio.addEventListener("stalled", () => setTimeout(tryRecoverStream, 2500));
++
++// Coming back to the foreground: if the user still wants audio but the
++// element got stopped in the background, pick it back up where it left off.
++document.addEventListener("visibilitychange", () => {
++  if (document.hidden) return;
++  if (S.wantPlaying && audio.paused && audio.src && !S.loading) {
++    audio.play().catch(() => {});
++  }
++});
++
++// Track user intent so recovery never fights a deliberate pause
++const _origTogglePlay = typeof togglePlay === "function" ? togglePlay : null;
++audio.addEventListener("play", () => { S.wantPlaying = true; });
++// Note: intent on PAUSE is set inside togglePlay() and the MediaSession
++// "pause" handler — i.e. at the points a human actually asks to stop. The
++// previous approach inferred it from #ctrl-play / #mini-play click handlers,
++// which missed the keyboard shortcut, the lock-screen button and headphone
++// controls: those pauses looked like OS interference, so auto-resume undid
++// them and playback restarted a moment after the user paused.
++
++/* ── Background-playback resilience ───────────────────────────────────
++   Correction to an earlier version of this file: the Screen Wake Lock is
++   automatically RELEASED whenever the document becomes hidden, and
++   request() rejects outright if the page isn't visible. So it does nothing
++   for background playback — the earlier comment here claiming otherwise was
++   simply wrong. It is still worth holding, but for a different reason: it
++   stops the screen sleeping while you're actually looking at the player
++   (phone mounted on a dashboard, say).
++
++   The things that genuinely keep background audio alive are, in order:
++     1. Never going silent at a track boundary  -> see armNext() above.
++        A tab that continuously produces audio is far less likely to be
++        frozen than one that goes quiet every few minutes.
++     2. MediaSession metadata + playback state, so the OS treats us as a
++        real media session rather than an incidental noise-maker.
++     3. Auto-resume below, for when the OS pauses us anyway.
++     4. Installing as a PWA and setting battery to Unrestricted — still the
++        single biggest lever, and the same advice Spotify gives. */
++
++/* ── Screen Wake Lock ─────────────────────────────────────────────────
++   What this genuinely does: stops the SCREEN sleeping while music is
++   playing and the app is on screen. That's the dashboard case — phone
++   mounted in the car, or propped up while you cook — where having the
++   display die every 30 seconds is the annoyance.
++
++   What it does NOT do, to be clear: it cannot keep audio alive once the
++   app is minimised. The spec releases the lock automatically whenever the
++   document becomes hidden, and request() rejects outright if the page
++   isn't visible. Background survival comes from gapless transitions,
++   MediaSession, and battery-Unrestricted — not from this.
++
++   Because it holds the display on, it costs battery, so it's a setting
++   the user owns rather than something we impose. */
++let _wakeLock = null;
++
++async function acquireWakeLock() {
++  if (!S.homeCfg.wakeLock) return;                  // user turned it off
++  if (!("wakeLock" in navigator)) return;           // unsupported browser
++  if (_wakeLock) return;                            // already held
++  if (document.hidden) return;                      // request() would reject
++  if (!S.wantPlaying || audio.paused) return;       // only while actually playing
++  try {
++    _wakeLock = await navigator.wakeLock.request("screen");
++    _wakeLock.addEventListener("release", () => { _wakeLock = null; });
++    window.ndlog && window.ndlog("wake lock acquired — screen will stay on");
++  } catch (e) {
++    _wakeLock = null;                               // denied; harmless
++    window.ndlog && window.ndlog(`wake lock refused: ${e.name}`);
++  }
++}
++
++function releaseWakeLock() {
++  try { _wakeLock?.release(); } catch {}
++  _wakeLock = null;
++}
++
++// The OS drops the lock whenever we're hidden, so re-take it on return.
++document.addEventListener("visibilitychange", () => {
++  if (document.hidden) { _wakeLock = null; return; }  // already released by UA
++  acquireWakeLock();
++});
++audio.addEventListener("playing", acquireWakeLock);
++audio.addEventListener("pause",   releaseWakeLock);
++audio.addEventListener("ended",   () => { if (!S.queue?.length) releaseWakeLock(); });
++
++function wakeLockSupported() { return "wakeLock" in navigator; }
++
++/* The core auto-resume: if audio pauses but the user's intent is still
++   "playing" and no phone call / other app has taken audio focus, resume.
++   We give the OS a beat first (an intentional pause also fires this), then
++   check intent. A real user pause sets wantPlaying=false via the button
++   handlers above, so this won't fight them. */
++let _resumeGuard = 0;
++audio.addEventListener("pause", () => {
++  if (!S.wantPlaying || S.loading) return;
++  const now = Date.now();
++  if (now - _resumeGuard < 800) return;   // debounce rapid pause/play churn
++  _resumeGuard = now;
++  setTimeout(() => {
++    // Still want audio, still paused, still have a source? Resume it.
++    // A deliberate user pause set wantPlaying=false, so we won't fight it.
++    // In the background the OS may refuse play() — we try once and respect
++    // a rejection rather than looping.
++    if (S.wantPlaying && audio.paused && audio.src && !S.loading) {
++      audio.play().catch(() => {});
++    }
++  }, 500);
++});
++
++/* ── Installed vs browser tab ────────────────────────────────────────
++   Running inside a Chrome tab is the cause of two things people notice:
++   the media notification shows Chrome's icon (a website can't override
++   it — only an installed app can), and Android freezes background tabs
++   far more aggressively than installed apps, so playback stops when you
++   minimise. Installed to the home screen, both go away. We surface this
++   once, in About, rather than nagging. */
++function isInstalledPWA() {
++  return window.matchMedia("(display-mode: standalone)").matches
++      || window.matchMedia("(display-mode: fullscreen)").matches
++      || window.matchMedia("(display-mode: minimal-ui)").matches
++      || navigator.standalone === true;
++}
++
++function renderInstallState() {
++  const box = $("install-state");
++  if (!box) return;
++  const rows = installDiagnostics();
++  const installed = typeof isInstalledPWA === "function" && isInstalledPWA();
++
++  const checks = rows.map(r =>
++    `<li class="${r.warn ? "warn" : (r.ok ? "ok" : "no")}"><i class="ti ti-${r.warn ? "alert-triangle" : (r.ok ? "circle-check" : "circle-x")}"></i>${r.label}</li>`
++  ).join("");
++
++  if (installed) {
++    box.className = "install-box ok";
++    box.innerHTML = `<div class="install-h"><i class="ti ti-circle-check"></i> Installed as an app</div>
++      <ul class="check-list">${checks}</ul>
++      <p class="about-p">Background playback and the Naada icon in your media
++      notification both work as intended.</p>`;
++    return;
++  }
++
++  const httpsLocal = location.protocol === "https:" &&
++    ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
++
++  box.className = "install-box warn";
++  box.innerHTML = `<div class="install-h"><i class="ti ti-alert-triangle"></i> Running in a browser tab</div>
++    <ul class="check-list">${checks}</ul>
++    <p class="about-p">While Naada runs as a Chrome tab, two things stay broken
++    no matter what the app does: music stops when you minimise, and the media
++    notification shows Chrome's icon instead of ours.</p>
++    <button class="modal-primary" id="install-now" style="margin-top:10px${_installPrompt ? "" : ";display:none"}">
++      <i class="ti ti-download"></i> Install Naada
++    </button>
++    ${httpsLocal ? `
++    <div class="fix-box">
++      <div class="fix-h"><i class="ti ti-tool"></i> The fix — switch to plain HTTP</div>
++      <p class="about-p">Chrome refuses to install any app served over HTTPS with
++      a certificate you had to click past. But <b>http://localhost is trusted by
++      Chrome automatically</b>, no certificate needed. On your server:</p>
++      <pre class="fix-code">./naada.sh stop
++NAADA_HTTP_ONLY=1 ./naada.sh start</pre>
++      <p class="about-p">Then open <b>http://localhost:5000</b> and the Install
++      button above should appear.</p>
++    </div>` : `
++    <p class="about-p" style="margin-top:8px">If that button isn't showing,
++    Chrome hasn't judged the app installable. Use <b>Chrome ⋮ → Add to Home
++    Screen</b>; if the result still opens with a browser address bar, the
++    certificate is the blocker (see INSTALL.txt).</p>`}`;
++
++  const btn = $("install-now");
++  if (btn) btn.addEventListener("click", doInstall);
++}
++
++/* ═══════════════════════════════════════════════════════════════════════
++   v26: Android back button, visible row menus, install prompt, prefetch
++═══════════════════════════════════════════════════════════════════════ */
++
++/* ── The ⋮ on every song row ──────────────────────────────────────────
++   Delete used to be reachable only by long-press, which is a gesture you
++   have to already know about. A hidden gesture isn't a UI. The same menu
++   is now one visible tap away on every row; long-press still works for
++   anyone who's learned it. */
++document.addEventListener("click", e => {
++  const btn = e.target.closest(".t-menu[data-menu]");
++  if (!btn) return;
++  e.stopPropagation();
++  e.preventDefault();
++  const row = btn.closest(".track, .pl-row");
++  const ctx = row ? tmContextOf(row) : "browse";
++  const track = tmFindTrack(btn.dataset.menu, ctx);
++  if (track) openTrackMenu(track, ctx);
++}, true);
++
++/* ── Android back button ─────────────────────────────────────────────
++   The app had no History API integration at all, so the system back
++   gesture went straight past it and minimised the whole app. Now every
++   sheet, modal and tab change puts an entry on the history stack, and
++   back unwinds them one at a time — closing the top sheet, then stepping
++   back through tabs, and only exiting from Home with nothing open. */
++(function initBackNav() {
++  const OVERLAY_SEL = ".sheet, .modal-back, .now-screen";
++  const stack = [];        // overlays currently open, in the order opened
++  let syncingBack = false; // true while we're unwinding history ourselves
++
++  try { history.replaceState({ nd: "root" }, ""); } catch {}
++
++  function pushEntry(tag) {
++    try { history.pushState({ nd: tag }, ""); } catch {}
++  }
++
++  // Watch every overlay for the .open class rather than wrapping ~20 call
++  // sites — this also covers any overlay added later without extra wiring.
++  const obs = new MutationObserver(muts => {
++    for (const m of muts) {
++      const el = m.target;
++      const open = el.classList.contains("open");
++      const at = stack.indexOf(el);
++
++      if (open && at === -1) {
++        stack.push(el);
++        pushEntry(el.id || "overlay");
++      } else if (!open && at !== -1) {
++        stack.splice(at, 1);
++        // Closed by a button rather than by back — drop the matching
++        // history entry so the stack doesn't drift out of step.
++        if (!syncingBack) {
++          syncingBack = true;
++          try { history.back(); } catch { syncingBack = false; }
++        }
++      }
++    }
++  });
++  document.querySelectorAll(OVERLAY_SEL).forEach(el =>
++    obs.observe(el, { attributes: true, attributeFilter: ["class"] }));
++
++  // Tab changes are history too: back from Library lands on Home
++  const pageStack = [];
++  window.ndNavPage = function (from, to) {
++    if (from && from !== to) {
++      pageStack.push(from);
++      pushEntry("page:" + to);
++    }
++  };
++
++  window.addEventListener("popstate", () => {
++    // This popstate is the one we triggered ourselves after a UI close
++    if (syncingBack) { syncingBack = false; return; }
++
++    // 1. Close the topmost open overlay
++    const top = stack[stack.length - 1];
++    if (top) {
++      syncingBack = true;             // stop the observer re-firing history.back
++      top.classList.remove("open");
++      stack.pop();
++      syncingBack = false;
++      return;
++    }
++
++    // 2. Otherwise step back through tabs
++    if (pageStack.length) {
++      const prev = pageStack.pop();
++      if (typeof gotoSilent === "function") gotoSilent(prev);
++      return;
++    }
++
++    // 3. Nothing left to unwind — let the system have the back press,
++    //    which minimises the app the way any Android app would.
++  });
++})();
++
++/* goto() that doesn't add to history — used when replaying the back stack */
++function gotoSilent(page) {
++  if (typeof goto !== "function") return;
++  window._ndSilentNav = true;
++  try { goto(page); } finally { window._ndSilentNav = false; }
++}
++
++/* ── Prefetch the next track's stream URL ────────────────────────────
++   The audio itself streams from the CDN, but the URL for each song comes
++   from our Flask server. The server now runs on an always-on cloud VM
++   (OCI), so the old "frozen Termux between tracks" failure is gone — but
++   prefetching is still worth it: it cuts latency at the track boundary to
++   near zero and reduces load on the free-tier VM. The deep byte buffer
++   below additionally lets songs play with no network at all. */
++S.nextUrl = null;
++
++/* ═══════════════════════════════════════════════════════════════════════
++   Look-ahead buffering — the "keep playing on a drive through a dead zone"
++   feature.
++
++   Two layers, because they solve different problems:
++
++   1. URL prefetch (S.nextUrl): resolves the NEXT track's CDN url ahead of
++      time. Cuts track-boundary latency to near zero; also means a brief
++      network blip at a song change doesn't stall playback.
++
++   2. Audio-blob buffer (this block): actually downloads the bytes of the
++      next several tracks into the Cache API. Once cached, a song plays with
++      ZERO network — which is what carries you through a tunnel, a lift, or a
++      patchy stretch of highway. This is the real offline resilience.
++
++   We buffer a rolling window ahead of the current track. We cap it so we
++   don't gorge on mobile data or fill storage: BUFFER_AHEAD tracks, evicting
++   anything now behind us.
++═══════════════════════════════════════════════════════════════════════ */
++const AUDIO_CACHE = "naada-audio-v1";
++const BUFFER_AHEAD = 6;          // how many upcoming tracks to hold as bytes
++const BUFFER_MAX_MB = 120;       // hard ceiling on the audio cache
++
++S.nextUrl = null;
++S._buffering = new Set();        // track ids currently downloading
++
++async function _audioCache() {
++  try { return await caches.open(AUDIO_CACHE); } catch { return null; }
++}
++
++// Cache key is the track id, not the signed CDN url (which rotates), so a
++// buffered song stays findable even after its url expires.
++function _bufKey(id) { return `/buffered-audio/${id}`; }
++
++async function isBuffered(id) {
++  const c = await _audioCache();
++  if (!c) return false;
++  return !!(await c.match(_bufKey(id)));
++}
++
++async function bufferedUrl(id) {
++  const c = await _audioCache();
++  if (!c) return null;
++  const hit = await c.match(_bufKey(id));
++  if (!hit) return null;
++  try {
++    const blob = await hit.blob();
++    return URL.createObjectURL(blob);
++  } catch { return null; }
++}
++
++/* A map of pre-resolved stream URLs: id -> { url, at }. This is the piece
++   that fixes the "plays 2-3 songs then stops when the phone sleeps" bug.
++   The old design cached only ONE next URL, so after that single track the
++   player called back to the Termux server — which Android has frozen during
++   sleep — and playback died. Now we resolve a deep window of URLs while the
++   app is awake, so the queue can advance through many tracks touching no
++   server at all. URLs are cached longer than the byte buffer because a URL
++   is tiny; only the bytes are storage-heavy. */
++S.urlCache = S.urlCache || {};
++const URL_AHEAD = 20;             // how many upcoming stream URLs to hold
++const URL_TTL = 30 * 60 * 1000;   // JioSaavn signed URLs are good for a while
++
++function cachedUrl(id) {
++  const e = S.urlCache[id];
++  if (e && Date.now() - e.at < URL_TTL) return e.url;
++  return null;
++}
++
++async function _resolveUrl(id) {
++  // 1. A URL we already resolved and cached — no network at all.
++  const hit = cachedUrl(id);
++  if (hit) return hit;
++  // 2. The legacy single-slot, kept for compatibility.
++  if (S.nextUrl?.id === id && S.nextUrl.url) return S.nextUrl.url;
++  // 3. Last resort: ask the server. This is the ONLY path that needs Termux
++  //    alive, and the whole point of the deep cache is to almost never reach
++  //    it while backgrounded.
++  try {
++    const r = await fetch(`/api/song/${id}`);
++    if (!r.ok) return null;
++    const d = await r.json();
++    if (d.url) { S.urlCache[id] = { url: d.url, at: Date.now() }; return d.url; }
++    return null;
++  } catch { return null; }
++}
++
++async function _downloadToBuffer(track) {
++  if (!track?.id || S._buffering.has(track.id)) return;
++  if (await isBuffered(track.id)) return;
++  S._buffering.add(track.id);
++  try {
++    const url = await _resolveUrl(track.id);
++    if (!url || !url.startsWith("http")) return;
++    // Fetch the actual audio bytes. no-cors would give an opaque response we
++    // can't replay, so we rely on the CDN's permissive CORS (same as the
++    // <audio> element already uses with crossOrigin="anonymous").
++    const resp = await fetch(url, { mode: "cors" });
++    if (!resp.ok) return;
++    const c = await _audioCache();
++    if (!c) return;
++    await c.put(_bufKey(track.id), resp.clone());
++    window.ndlog && window.ndlog(`buffered bytes: ${track.title}`);
++  } catch (e) {
++    window.ndlog && window.ndlog(`buffer failed ${track.id}: ${e.message}`);
++  } finally {
++    S._buffering.delete(track.id);
++  }
++}
++
++async function _evictBufferBehind() {
++  const c = await _audioCache();
++  if (!c) return;
++  try {
++    const keep = new Set();
++    for (let i = 0; i < BUFFER_AHEAD + 1; i++) {
++      const t = S.queue?.[S.queueIdx + i];
++      if (t?.id) keep.add(_bufKey(t.id));
++    }
++    // also keep the current track
++    if (S.track?.id) keep.add(_bufKey(S.track.id));
++    const keys = await c.keys();
++    let total = 0;
++    const sized = [];
++    for (const req of keys) {
++      const res = await c.match(req);
++      const len = Number(res?.headers.get("content-length")) || 0;
++      total += len;
++      sized.push({ req, len, keep: keep.has(new URL(req.url).pathname) });
++    }
++    // Evict anything we're no longer keeping, and trim to the size cap
++    for (const s of sized) {
++      if (!s.keep) { await c.delete(s.req); total -= s.len; }
++    }
++    // If still over cap, drop from the far end of the keep-window
++    if (total > BUFFER_MAX_MB * 1024 * 1024) {
++      for (let i = BUFFER_AHEAD; i >= 1 && total > BUFFER_MAX_MB*1024*1024; i--) {
++        const t = S.queue?.[S.queueIdx + i];
++        if (t?.id) { await c.delete(_bufKey(t.id)); }
++      }
++    }
++  } catch { /* best effort */ }
++}
++
++// The main buffering pass. Two windows of different depths:
++//   • URLs  — deep (URL_AHEAD). Tiny, so we resolve far ahead. This is what
++//             lets the queue keep advancing when the server is asleep.
++//   • bytes — shallow (BUFFER_AHEAD). Heavy, so a tighter window. This is
++//             what lets a song play with NO network at all (tunnel/dead zone).
++async function fillBuffer() {
++  try {
++    if (!S.queue?.length || S.shuffle) {
++      // Shuffle picks randomly, so look-ahead can't know what's next; just
++      // make sure the immediate next-in-array URL exists as a cheap hedge.
++      const nxt = S.queue?.[S.queueIdx + 1];
++      if (nxt) { const u = await _resolveUrl(nxt.id); if (u) S.nextUrl = { id: nxt.id, url: u }; }
++      return;
++    }
++
++    // Deep URL window — resolve up to URL_AHEAD upcoming tracks' URLs.
++    for (let i = 1; i <= URL_AHEAD; i++) {
++      const t = S.queue[S.queueIdx + i];
++      if (!t) break;
++      if (!cachedUrl(t.id)) {
++        const u = await _resolveUrl(t.id);
++        if (u && i === 1) S.nextUrl = { id: t.id, url: u };  // keep legacy slot warm
++      }
++    }
++    // Prune URL cache entries for tracks no longer near the play head.
++    _pruneUrlCache();
++
++    // Shallow byte window — skip if the user asked the OS to save data.
++    // Respect both the user's own setting and the OS Data Saver flag.
++    if (S.homeCfg.buffer === false || navigator.connection?.saveData) return;
++    for (let i = 1; i <= BUFFER_AHEAD; i++) {
++      const t = S.queue[S.queueIdx + i];
++      if (!t) break;
++      if (!(await isBuffered(t.id))) await _downloadToBuffer(t);
++    }
++    _evictBufferBehind();
++  } catch { /* best effort only */ }
++}
++
++function _pruneUrlCache() {
++  const keep = new Set();
++  for (let i = -1; i <= URL_AHEAD; i++) {
++    const t = S.queue?.[S.queueIdx + i];
++    if (t?.id) keep.add(t.id);
++  }
++  const now = Date.now();
++  for (const id of Object.keys(S.urlCache)) {
++    if (!keep.has(id) || now - S.urlCache[id].at > URL_TTL) delete S.urlCache[id];
++  }
++}
++
++// Keep the old name working for any existing callers.
++const prefetchNextTrack = fillBuffer;
++
++// Once a song is properly under way, quietly line up the ones after it.
++audio.addEventListener("playing", () => setTimeout(fillBuffer, 3000));
++
++/* ── Install to home screen ──────────────────────────────────────────
++   Chrome fires beforeinstallprompt only when the app is actually
++   installable (valid HTTPS, manifest, service worker). Capturing it lets
++   us offer a real Install button instead of telling people to hunt
++   through a browser menu — and its absence is itself a useful signal,
++   which the diagnostics below report honestly. */
++let _installPrompt = null;
++
++window.addEventListener("beforeinstallprompt", e => {
++  e.preventDefault();
++  _installPrompt = e;
++  if (typeof renderInstallState === "function") renderInstallState();
++  const btn = $("install-now");
++  if (btn) btn.style.display = "";
++});
++
++window.addEventListener("appinstalled", () => {
++  _installPrompt = null;
++  toast("Naada installed — open it from your home screen");
++  if (typeof renderInstallState === "function") renderInstallState();
++});
++
++async function doInstall() {
++  if (!_installPrompt) {
++    toast("Use Chrome ⋮ → Add to Home Screen");
++    return;
++  }
++  _installPrompt.prompt();
++  try { await _installPrompt.userChoice; } catch {}
++  _installPrompt = null;
++}
++
++/* Honest diagnostics — each line is measured, not assumed */
++function installDiagnostics() {
++  const rows = [];
++  const secure = window.isSecureContext;
++  const sw = !!navigator.serviceWorker?.controller;
++  const installed = typeof isInstalledPWA === "function" && isInstalledPWA();
++  const isHttps = location.protocol === "https:";
++  const localHost = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
++
++  rows.push({ ok: installed, label: installed
++      ? "Running as an installed app"
++      : "Running in a browser tab" });
++  rows.push({ ok: secure, label: secure
++      ? `Secure context (${location.protocol}//${location.hostname})`
++      : "Not a secure context — install is blocked" });
++  rows.push({ ok: sw, label: sw
++      ? "Service worker active"
++      : "Service worker not controlling this page" });
++  rows.push({ ok: !!_installPrompt || installed, label: (_installPrompt || installed)
++      ? "Chrome reports the app as installable"
++      : "Chrome has not offered an install prompt" });
++
++  // The app-switcher / recents icon is NOT read live from the manifest — it
++  // is copied into the generated WebAPK when you install, and Android keeps
++  // using that copy. So if the icons changed after installing (as they did
++  // here), the recents view can keep showing the old or a blank icon
++  // indefinitely, even though the manifest is now perfect. The only reliable
++  // refresh is uninstall + reinstall.
++  if (installed) {
++    rows.push({ ok: true, warn: true, label:
++      "App-switcher icon is baked in at install time. If it looks wrong or "
++      + "blank, uninstall Naada and install it again — Android will not "
++      + "refresh that icon on its own." });
++  }
++
++  // Two very different reasons an install prompt might be missing.
++  const proxiedHttps = isHttps && !localHost;
++  if (proxiedHttps && !installed && !_installPrompt) {
++    rows.push({ ok: false, warn: true, label:
++      "Real HTTPS certificate, so the origin is fine — if there's still no "
++      + "install prompt, Chrome may already consider it installed, or the "
++      + "service worker hasn't taken control yet. Reload once and re-check." });
++  }
++  if (isHttps && localHost && !installed && !_installPrompt) {
++    rows.push({ ok: false, warn: true, label:
++      "Self-signed HTTPS on localhost — this is almost certainly the blocker. "
++      + "Plain http://localhost is MORE installable than https:// with a "
++      + "certificate you had to click through." });
++  }
++  return rows;
++}
++
++/* ═══════════════════════════════════════════════════════════════════════
++   v28: productivity — resume, recent searches, play counts, sleep timer
++═══════════════════════════════════════════════════════════════════════ */
++
++/* ── Resume where you left off ───────────────────────────────────────
++   A daily-driver player that forgets what you were listening to makes you
++   do navigation work every single launch. We remember the track, the
++   queue and the position, then restore it paused — never auto-playing,
++   because audio starting by itself when you open an app is hostile. */
++const RESUME_KEY = "nd_resume";
++
++function saveResume() {
++  if (!S.track) return;
++  const at = Math.floor(audio.currentTime || 0);
++  // A zero position must never overwrite a real one for the same track.
++  // Real scenario this fixes: you open the app, resume restores you at
++  // 1:37 but paused, you don't press play, you close the app — pagehide
++  // then wrote at:0 and your place was silently lost.
++  if (at < 1) {
++    const prev = LS.get(RESUME_KEY, null);
++    if (prev?.track?.id === S.track.id && prev.at > 1) return;
++  }
++  try {
++    LS.set(RESUME_KEY, {
++      track: S.track,
++      queue: (S.queue || []).slice(0, 60),
++      idx: S.queueIdx,
++      at,
++      saved: Date.now(),
++    });
++  } catch {}
++}
++
++// Save on the events that matter, cheaply — not on every timeupdate
++let _resumeTick = 0;
++audio.addEventListener("timeupdate", () => {
++  const now = Date.now();
++  if (now - _resumeTick < 5000) return;   // at most once every 5s
++  _resumeTick = now;
++  saveResume();
++});
++audio.addEventListener("pause", saveResume);
++window.addEventListener("pagehide", saveResume);
++document.addEventListener("visibilitychange", () => { if (document.hidden) saveResume(); });
++
++function restoreResume() {
++  let r;
++  try { r = LS.get(RESUME_KEY, null); } catch { return; }
++  if (!r?.track) return;
++  // Anything older than a week is stale — you've moved on
++  if (r.saved && Date.now() - r.saved > 7 * 24 * 3600 * 1000) return;
++
++  S.track    = r.track;
++  S.queue    = Array.isArray(r.queue) && r.queue.length ? r.queue : [r.track];
++  S.queueIdx = typeof r.idx === "number" ? r.idx : 0;
++  S.resumeAt = r.at || 0;
++
++  // Show the mini-player in a paused, ready state. Nothing loads or plays
++  // until the user asks — no surprise audio, no wasted mobile data.
++  updateMeta(r.track);
++  const mini = $("mini-player");
++  if (mini) mini.classList.add("active");
++  setPlayIcons(false);
++  S.playing = false;
++
++  const st = $("resume-strip");
++  if (st && r.at > 15) {
++    st.style.display = "flex";
++    $("resume-label").textContent = `Resume "${r.track.title}" at ${fmt(r.at)}`;
++    st.onclick = () => {
++      st.style.display = "none";
++      play(S.track, S.queue, S.queueIdx);
++    };
++  }
++}
++
++// After play() attaches a source, jump to the remembered position once
++audio.addEventListener("loadedmetadata", () => {
++  if (S.resumeAt && S.track) {
++    const at = S.resumeAt;
++    S.resumeAt = 0;
++    if (at > 5 && at < (audio.duration || 0) - 5) {
++      try { audio.currentTime = at; } catch {}
++    }
++  }
++});
++
++/* ── Play counts → a "Most played" shelf that reflects you ───────────
++   Generic recommendations are guesses. Your own play history isn't. */
++S.playCounts = LS.get("nd_playcounts", {});
++
++function bumpPlayCount(t) {
++  if (!t?.id) return;
++  const e = S.playCounts[t.id] || { n: 0, t };
++  e.n += 1; e.t = { id:t.id, title:t.title, artist:t.artist, image:t.image, duration:t.duration };
++  e.last = Date.now();
++  S.playCounts[t.id] = e;
++  LS.set("nd_playcounts", S.playCounts);
++}
++
++function mostPlayed(limit = 12) {
++  return Object.values(S.playCounts)
++    .filter(e => e.n >= 2)              // one listen isn't a favourite
++    .sort((a,b) => b.n - a.n || b.last - a.last)
++    .slice(0, limit)
++    .map(e => e.t);
++}
++
++/* ── Recent searches ─────────────────────────────────────────────────
++   Re-typing the same artist every session is pure friction. */
++S.recentSearches = LS.get("nd_recent_searches", []);
++
++function addRecentSearch(q) {
++  q = (q || "").trim();
++  if (q.length < 2) return;
++  S.recentSearches = [q, ...S.recentSearches.filter(x => x.toLowerCase() !== q.toLowerCase())].slice(0, 8);
++  LS.set("nd_recent_searches", S.recentSearches);
++}
++
++function renderRecentSearches() {
++  const box = $("recent-searches");
++  if (!box) return;
++  if (!S.recentSearches.length || S.searchQ) { box.style.display = "none"; return; }
++  box.style.display = "block";
++  box.innerHTML = `<div class="recent-h">
++      <span>Recent</span>
++      <button class="recent-clear" id="recent-clear">Clear</button>
++    </div>
++    <div class="recent-chips">${
++      S.recentSearches.map(q =>
++        `<button class="recent-chip" data-q="${esc(q)}"><i class="ti ti-history"></i>${esc(q)}</button>`
++      ).join("")}</div>`;
++  box.querySelectorAll(".recent-chip").forEach(el =>
++    el.addEventListener("click", () => {
++      const inp = $("search-input");
++      inp.value = el.dataset.q;
++      S.searchQ = el.dataset.q;
++      $("search-clear")?.classList.add("vis");
++      doSearch(el.dataset.q);
++      renderRecentSearches();
++    }));
++  const clr = $("recent-clear");
++  if (clr) clr.addEventListener("click", () => {
++    S.recentSearches = []; LS.set("nd_recent_searches", []);
++    renderRecentSearches();
++  });
++}
++
++
++
++/* ═══════════════════════════════════════════════════════════════════════
++   v34: Living favicon
++   The tab icon is drawn on a canvas rather than loaded from a file, for
++   two reasons. First, the app icon is built for 192px+ and its bars land
++   on sub-pixel widths at 16px, which is why the tab looked empty. Drawing
++   it ourselves lets us thicken the bars for that size specifically.
++   Second, once it's a canvas we can animate it — so the tab breathes the
++   same travelling wave as the header mark whenever music is playing.
++═══════════════════════════════════════════════════════════════════════ */
++(function livingFavicon() {
++  const N = 32;                       // 2x the 16px slot, for retina tabs
++  let canvas, ctx, link, timer = null, phase = 0;
++
++  // Same five bars as the header mark, proportionally thicker so each one
++  // still covers a whole pixel after the browser shrinks it to 16px.
++  const BARS = [
++    { x: 13.5, w: 5.0, h: 22, a: 1.00 },   // centre
++    { x:  6.6, w: 4.6, h: 14, a: 0.88 },
++    { x: 21.0, w: 4.6, h: 14, a: 0.88 },
++    { x:  1.0, w: 4.2, h:  8, a: 0.60 },
++    { x: 26.8, w: 4.2, h:  8, a: 0.60 },
++  ];
++  // Phase offsets reproduce the header's travelling ripple rather than
++  // making all five bars pulse together.
++  const DELAY = [0, 0.12, 0.24, 0.36, 0.48];
++
++  function roundRect(c, x, y, w, h, r) {
++    c.beginPath();
++    c.moveTo(x + r, y);
++    c.arcTo(x + w, y,     x + w, y + h, r);
++    c.arcTo(x + w, y + h, x,     y + h, r);
++    c.arcTo(x,     y + h, x,     y,     r);
++    c.arcTo(x,     y,     x + w, y,     r);
++    c.closePath();
++  }
++
++  function draw(t) {
++    ctx.clearRect(0, 0, N, N);
++
++    // Brand gradient plate
++    const g = ctx.createLinearGradient(0, 0, N, N);
++    g.addColorStop(0, "#4A1A6B");
++    g.addColorStop(1, "#1A0A3B");
++    roundRect(ctx, 0, 0, N, N, 7);
++    ctx.fillStyle = g;
++    ctx.fill();
++
++    BARS.forEach((b, i) => {
++      // Resting: full height. Playing: scale between .5 and 1, offset per
++      // bar — the same shape as the header's wbPlay keyframes.
++      let scale = 1, alpha = b.a;
++      if (t !== null) {
++        const p = (t - DELAY[i]) % 1;
++        const s = Math.sin(((p < 0 ? p + 1 : p)) * Math.PI * 2 - Math.PI / 2);
++        scale = 0.5 + 0.25 * (s + 1);          // .5 → 1
++        alpha = b.a * (0.7 + 0.15 * (s + 1));
++      }
++      const h = b.h * scale;
++      ctx.globalAlpha = alpha;
++      ctx.fillStyle = "#fff";
++      roundRect(ctx, b.x, (N - h) / 2, b.w, h, b.w / 2);
++      ctx.fill();
++    });
++    ctx.globalAlpha = 1;
++
++    link.href = canvas.toDataURL("image/png");
++  }
++
++  function ensure() {
++    if (canvas) return true;
++    try {
++      canvas = document.createElement("canvas");
++      canvas.width = canvas.height = N;
++      ctx = canvas.getContext("2d");
++      if (!ctx) return false;
++
++      // Prove the canvas can actually produce a data URL BEFORE touching the
++      // static links. On some privacy settings toDataURL throws; if we'd
++      // already removed the file-based icons the tab would go blank — which
++      // is exactly the "favicon won't show" failure. So: build our own link,
++      // draw once, and only if that yields a real data URL do we retire the
++      // static links. Otherwise we bail and the static PNGs keep the tab.
++      const test = document.createElement("canvas");
++      test.width = test.height = N;
++      const tctx = test.getContext("2d");
++      tctx.fillRect(0, 0, 2, 2);
++      const probe = test.toDataURL("image/png");
++      if (!probe || probe.length < 64) return false;   // canvas export blocked
++
++      link = document.createElement("link");
++      link.rel = "icon";
++      link.type = "image/png";
++      document.head.appendChild(link);
++
++      // Draw the first real frame into our link, THEN remove the old links.
++      draw(null);
++      if (!link.href || link.href.length < 64) {        // draw didn't take
++        link.remove(); link = null; canvas = null; ctx = null;
++        return false;
++      }
++      document.querySelectorAll('link[rel~="icon"]').forEach(l => {
++        if (l !== link) l.remove();
++      });
++      return true;
++    } catch {
++      // Anything went wrong: make sure the static links remain untouched.
++      if (link) { try { link.remove(); } catch {} link = null; }
++      canvas = null; ctx = null;
++      return false;
++    }
++  }
++
++  function stop() {
++    if (timer) { clearInterval(timer); timer = null; }
++    if (canvas) draw(null);           // settle to the resting mark
++  }
++
++  function start() {
++    if (timer) return;
++    // 8fps is plenty for a 16px icon and costs almost nothing. Browsers
++    // throttle background tabs to ~1Hz anyway, which just slows the wave.
++    timer = setInterval(() => { phase = (phase + 0.09) % 1; draw(phase); }, 125);
++  }
++
++  if (!ensure()) return;               // no canvas: the PNG links stand
++
++  // Someone who asked the OS for less motion should not get a wiggling tab
++  const calm = window.matchMedia("(prefers-reduced-motion: reduce)");
++  const sync = () => {
++    const playing = !audio.paused && !!audio.src;
++    if (playing && !calm.matches) start(); else stop();
++  };
++
++  draw(null);
++  audio.addEventListener("play",  sync);
++  audio.addEventListener("pause", sync);
++  audio.addEventListener("ended", sync);
++  calm.addEventListener?.("change", sync);
++  window.addEventListener("pagehide", stop);
++  sync();
++})();
++
++/* ── Back-to-top ──────────────────────────────────────────────────────
++   Each .page scrolls independently, so we watch whichever page is active
++   and show the button once it's scrolled past a screenful. Tapping it
++   smooth-scrolls that page back to the top. */
++(function backToTop() {
++  const btn = $("to-top");
++  if (!btn) return;
++
++  function activePage() {
++    return document.querySelector(".page.active");
++  }
++
++  function onScroll(e) {
++    const pg = e.target;
++    if (!pg.classList?.contains("page") || !pg.classList.contains("active")) return;
++    btn.classList.toggle("show", pg.scrollTop > pg.clientHeight * 0.8);
++  }
++
++  // Listen on the container so we catch scrolls from any page (capture,
++  // because scroll doesn't bubble).
++  document.addEventListener("scroll", onScroll, true);
++
++  btn.addEventListener("click", () => {
++    const pg = activePage();
++    if (pg) pg.scrollTo({ top: 0, behavior: "smooth" });
++    btn.classList.remove("show");
++  });
++
++  // Hide it on tab change until the new page is scrolled again
++  document.querySelectorAll(".nav-item").forEach(n =>
++    n.addEventListener("click", () => btn.classList.remove("show")));
++})();
++
++/* ── Haptics + offline-buffer preference ──────────────────────────────
++   Two small levers the user should own rather than have imposed:
++
++   • Haptics: a 10ms tick on the primary transport controls. Native music
++     apps do this and its absence is part of why web apps feel less solid.
++     Only on play/pause/next/prev/like — buzzing on every tap is irritating.
++   • Offline buffering: downloading the next songs costs mobile data, so
++     it's a choice, not something we quietly do to someone's data plan.
++     (The OS-level Data Saver flag is still honoured on top of this.) */
++if (typeof S.homeCfg.haptics  !== "boolean") S.homeCfg.haptics  = true;
++if (typeof S.homeCfg.wakeLock !== "boolean") S.homeCfg.wakeLock = true;
++if (typeof S.homeCfg.buffer  !== "boolean") S.homeCfg.buffer  = true;
++
++function haptic(ms = 10) {
++  if (!S.homeCfg.haptics) return;
++  try { navigator.vibrate && navigator.vibrate(ms); } catch {}
++}
++
++(function initPrefToggles() {
++  const hap = $("settings-haptics"), buf = $("settings-buffer");
++  if (hap) {
++    hap.checked = S.homeCfg.haptics;
++    hap.addEventListener("change", () => {
++      S.homeCfg.haptics = hap.checked;
++      LS.set("nd_homecfg", S.homeCfg);
++      if (hap.checked) haptic(15);            // confirm it by feel
++    });
++  }
++  if (buf) {
++    buf.checked = S.homeCfg.buffer;
++    buf.addEventListener("change", () => {
++      S.homeCfg.buffer = buf.checked;
++      LS.set("nd_homecfg", S.homeCfg);
++      toast(buf.checked ? "Downloading songs ahead" : "Offline downloads off");
++      if (buf.checked) fillBuffer();
++    });
++  }
++
++  const wl = $("settings-wakelock"), wlHint = $("settings-wakelock-hint");
++  if (wl) {
++    if (!wakeLockSupported()) {
++      // Don't offer a switch that can't do anything — say why instead.
++      wl.checked = false; wl.disabled = true;
++      if (wlHint) wlHint.textContent = "This browser doesn't support keeping the screen awake.";
++    } else {
++      wl.checked = S.homeCfg.wakeLock;
++      wl.addEventListener("change", () => {
++        S.homeCfg.wakeLock = wl.checked;
++        LS.set("nd_homecfg", S.homeCfg);
++        if (wl.checked) { acquireWakeLock(); toast("Screen will stay on while playing"); }
++        else { releaseWakeLock(); toast("Screen can sleep normally"); }
++      });
++    }
++  }
++
++  // Wire the tick onto the primary transport controls only.
++  ["ctrl-play","ctrl-next","ctrl-prev","mini-play","mini-prev","mini-next","mini-like","np-like"]
++    .forEach(id => $(id)?.addEventListener("click", () => haptic(10)));
++})();
+diff --git a/static/index.html b/static/index.html
+index 07c9169..7e02208 100644
+--- a/static/index.html
++++ b/static/index.html
+@@ -4,6 +4,9 @@
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+   <meta name="theme-color" content="#4A1A6B">
++  <!-- Chrome reads the unprefixed name; the apple- one is iOS only and Chrome
++       logs a deprecation warning if it's the only one present. -->
++  <meta name="mobile-web-app-capable" content="yes">
+   <meta name="apple-mobile-web-app-capable" content="yes">
+   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+   <meta name="apple-mobile-web-app-title" content="Naada">
+@@ -31,12 +34,46 @@
+   <meta name="twitter:image" content="https://naada.adabala.com/static/icons/icon-512.png">
+ 
+   <link rel="manifest" href="/manifest.json">
+-  <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png?v=22">
+-  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png?v=22">
+-  <link rel="icon" type="image/svg+xml" href="/static/icons/icon.svg?v=22">
+-  <link rel="shortcut icon" href="/favicon.ico">
+-  <link rel="apple-touch-icon" href="/static/icons/icon-180.png?v=22">
+-  <link rel="stylesheet" href="/static/app.css?v=22">
++  <!-- Favicons. The manifest covers the INSTALLED app, but browsers don't read
++       it for the tab strip — these links are what put the Naada mark on a tab,
++       a bookmark, and the iOS home screen.
++       · SVG first: modern browsers prefer it (crisp at any DPI, tiny).
++       · ICO fallback: Safari and older browsers ignore SVG favicons.
++       · apple-touch-icon: iOS ignores the manifest entirely and needs this.
++       No ?v= query strings here — they were stale (stuck at v22) and a
++       versioned favicon URL just leaves the old icon cached under the old key. -->
++  <!-- Favicons for the tab strip.
++       Bold tab-specific artwork (the header wave mark), NOT the app icon —
++       the app icon's fine bars collapse to a smudge at 16px. The ?v query
++       is a cache-buster: browsers and Cloudflare cache favicons very
++       aggressively, and a previously-empty cached favicon is the most
++       common reason a tab icon "won't show up" even after it's fixed.
++       Bumping v forces a fresh fetch under a new cache key.
++
++       PNG is listed first and is the reliable path. The .ico covers the
++       bare /favicon.ico request a browser makes before any CSS/JS loads.
++       app.js MAY later swap in an animated canvas version, but only if
++       that genuinely succeeds — these static links always remain as the
++       floor, so the tab is never blank. -->
++  <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png?v=42">
++  <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png?v=42">
++  <link rel="icon" type="image/png" sizes="48x48" href="/static/icons/favicon-48.png?v=42">
++  <link rel="shortcut icon" href="/static/icons/favicon.ico?v=42">
++  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png?v=42">
++  <script>
++  /* Resolve theme before first paint to avoid a flash. "auto" follows the OS. */
++  (function () {
++    try {
++      var t = JSON.parse(localStorage.getItem("nd_theme")) || "auto";
++      var dark = t === "dark" || (t === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
++      document.documentElement.dataset.theme = dark ? "dark" : "light";
++    } catch (e) { document.documentElement.dataset.theme = "light"; }
++  })();
++  </script>
++  <link rel="preconnect" href="https://fonts.googleapis.com">
++  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
++  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
++  <link rel="stylesheet" href="/static/app.css?v=42">
+   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
+ </head>
+ <body>
+@@ -64,8 +101,6 @@
+         <span class="lang-pill-glyph" id="lang-pill-glyph">త</span>
+         <i class="ti ti-chevron-down lang-pill-caret"></i>
+       </button>
+-      <button class="icon-btn" id="btn-sleep" aria-label="Sleep timer"><i class="ti ti-moon"></i></button>
+-      <button class="icon-btn" id="btn-lyrics" aria-label="Lyrics"><i class="ti ti-microphone-2"></i></button>
+     </div>
+   </header>
+ 
+@@ -82,6 +117,12 @@
+ 
+     <!-- HOME ──────────────────────────────────────────────────────────── -->
+     <main class="page active" id="page-home" aria-label="Home">
++      <!-- Resume strip: one tap back into whatever you were last playing -->
++      <button class="resume-strip" id="resume-strip" style="display:none">
++        <i class="ti ti-player-play-filled"></i>
++        <span id="resume-label">Resume</span>
++        <i class="ti ti-chevron-right"></i>
++      </button>
+       <div class="home-hero">
+         <div class="home-hero-row">
+           <div>
+@@ -92,6 +133,17 @@
+         </div>
+       </div>
+ 
++      <!-- Pinned songs -->
++      <section class="shelf" id="shelf-pinned" data-shelf="pinned">
++        <div class="sec-hdr shelf-hdr" data-collapse="pinned">
++          <span class="sec-title"><i class="ti ti-pin-filled" style="font-size:15px;color:var(--gold)"></i> Pinned</span>
++          <i class="ti ti-chevron-down shelf-caret"></i>
++        </div>
++        <div class="shelf-body">
++          <div id="home-pinned" class="h-row" aria-label="Pinned songs"></div>
++        </div>
++      </section>
++
+       <!-- Quick access: jump back in (recents) -->
+       <section class="shelf" id="shelf-recents" data-shelf="recents">
+         <div class="sec-hdr shelf-hdr" data-collapse="recents">
+@@ -212,6 +264,7 @@
+         <button class="s-chip"        data-stype="artists" role="tab">Artists</button>
+         <button class="s-chip s-chip-ai" data-stype="mood" role="tab"><i class="ti ti-sparkles"></i> Mood</button>
+       </div>
++      <div id="recent-searches" class="recent-box" style="display:none"></div>
+       <div id="mood-panel" style="display:none">
+         <div class="mood-box">
+           <input id="mood-input" type="text" placeholder="e.g. rainy evening Telugu melodies"
+@@ -237,8 +290,13 @@
+     <!-- LIBRARY ───────────────────────────────────────────────────────── -->
+     <main class="page" id="page-library" aria-label="Library">
+       <div class="lib-hero">
+-        <div class="lib-hero-title">My Library</div>
+-        <div class="lib-hero-sub">Liked songs, playlists & history</div>
++        <div class="lib-hero-row">
++          <div>
++            <div class="lib-hero-title">My Library</div>
++            <div class="lib-hero-sub">Liked songs, playlists &amp; history</div>
++          </div>
++          <button class="icon-btn lib-hero-set" id="btn-lib-settings" aria-label="Settings"><i class="ti ti-adjustments"></i></button>
++        </div>
+       </div>
+       <div class="lib-stats">
+         <div class="lib-stat" id="stat-card-liked" role="button" tabindex="0"><div class="lib-stat-n" id="stat-liked">0</div><div class="lib-stat-l">Liked</div></div>
+@@ -262,9 +320,24 @@
+ 
+       <!-- Playlists -->
+       <div class="sec-hdr" id="sec-playlists">
+-        <span class="sec-title">Playlists</span>
+-        <span class="sec-more" id="new-playlist-btn">+ New</span>
++        <span class="sec-title" id="pl-sec-title">Albums &amp; Playlists</span>
++        <span class="sec-actions">
++          <span class="sec-more" id="new-folder-btn"><i class="ti ti-folder-plus"></i> Folder</span>
++          <span class="sec-more" id="new-playlist-btn">+ New</span>
++        </span>
+       </div>
++
++      <!-- Breadcrumb shown when inside a folder -->
++      <div class="crumb" id="pl-crumb" style="display:none">
++        <button class="crumb-back" id="crumb-back"><i class="ti ti-arrow-left"></i></button>
++        <span class="crumb-icon"><i class="ti ti-folder-filled"></i></span>
++        <span class="crumb-name" id="crumb-name">Folder</span>
++        <button class="crumb-menu" id="crumb-menu" aria-label="Folder options"><i class="ti ti-dots"></i></button>
++      </div>
++
++      <!-- Folders (root level only) -->
++      <div id="folder-grid" class="folder-grid"></div>
++
+       <div id="playlist-grid" class="pl-grid"></div>
+ 
+       <div class="section-divider"></div>
+@@ -280,9 +353,14 @@
+     </main>
+ 
+     <!-- QUEUE ─────────────────────────────────────────────────────────── -->
++    
++    
+     <main class="page" id="page-queue" aria-label="Queue">
+       <div class="sec-hdr" style="padding-top:16px">
+-        <span class="sec-title">Play Queue</span>
++        <span style="display:inline-flex;align-items:center;gap:6px">
++          <button class="icon-btn" id="queue-back" aria-label="Back"><i class="ti ti-arrow-left"></i></button>
++          <span class="sec-title">Play Queue</span>
++        </span>
+         <span class="badge badge-teal" id="queue-badge">0 songs</span>
+       </div>
+       <div class="queue-actions" id="queue-actions" style="display:none">
+@@ -317,12 +395,18 @@
+     <div class="nav-item" data-page="search"><i class="ti ti-search"></i><span>Search</span></div>
+     <div class="nav-item" data-page="library"><i class="ti ti-heart"></i><span>Library</span></div>
+     <div class="nav-item" data-page="trivia"><i class="ti ti-bulb"></i><span>Trivia</span></div>
+-    <div class="nav-item" data-page="queue"><i class="ti ti-list"></i><span>Queue</span></div>
+   </nav>
+ 
++  <!-- Back-to-top: appears on long lists, scrolls the active page up -->
++  <button class="to-top" id="to-top" aria-label="Back to top">
++    <i class="ti ti-arrow-up"></i>
++  </button>
++
+   <!-- ── Mini Player (compact bar, tap to expand) ──────────────────────── -->
+   <div class="mini-player" id="mini-player" role="button" tabindex="0" aria-label="Open now playing">
+     <div class="mini-progress" id="mini-progress"></div>
++    <span class="mini-swipe-hint left" aria-hidden="true"><i class="ti ti-player-track-next"></i></span>
++    <span class="mini-swipe-hint right" aria-hidden="true"><i class="ti ti-player-track-prev"></i></span>
+     <div class="mini-art" id="mini-art" aria-hidden="true"><span id="mini-art-ph">🎵</span></div>
+     <div class="mini-info">
+       <div class="mini-title" id="mini-title">Tap a song to play</div>
+@@ -330,6 +414,7 @@
+     </div>
+     <div class="mini-controls">
+       <button class="mini-btn" id="mini-like" aria-label="Like"><i class="ti ti-heart"></i></button>
++      <button class="mini-btn" id="mini-prev" aria-label="Previous"><i class="ti ti-player-skip-back"></i></button>
+       <button class="mini-btn mini-play" id="mini-play" aria-label="Play / Pause"><i class="ti ti-player-play" id="mini-pp-icon"></i></button>
+       <button class="mini-btn" id="mini-next" aria-label="Next"><i class="ti ti-player-skip-forward"></i></button>
+     </div>
+@@ -343,6 +428,7 @@
+   <div class="now-header">
+     <button class="icon-btn" id="now-close" aria-label="Minimize"><i class="ti ti-chevron-down"></i></button>
+     <div class="now-source" id="now-source">Now Playing</div>
++    <button class="icon-btn" id="sleep-btn" aria-label="Sleep timer"><i class="ti ti-moon"></i></button>
+     <button class="icon-btn" id="now-queue-btn" aria-label="Show queue"><i class="ti ti-list"></i></button>
+   </div>
+ 
+@@ -361,7 +447,7 @@
+   <div class="now-actions">
+     <button class="now-act" id="np-like" aria-label="Like"><i class="ti ti-heart"></i></button>
+     <button class="now-act" id="np-add-pl" aria-label="Add to playlist"><i class="ti ti-playlist-add"></i></button>
+-    <button class="now-act" id="np-lyrics" aria-label="Lyrics"><i class="ti ti-microphone-2"></i></button>
++    <button class="now-act" id="np-lyrics" aria-label="Lyrics"><i class="ti ti-file-text"></i></button>
+     <button class="now-act" id="np-story" aria-label="Story / trivia"><i class="ti ti-sparkles"></i></button>
+     <button class="now-act" id="np-radio" aria-label="Start radio"><i class="ti ti-radio"></i></button>
+   </div>
+@@ -428,6 +514,9 @@
+       <span class="sec-more" id="pl-play-all">▶ Play all</span>
+     </div>
+     <div id="pl-detail-list" role="list"></div>
++    <div class="reorder-hint" id="pl-reorder-hint" style="display:none">
++      <i class="ti ti-grip-vertical"></i> Drag the handle to reorder
++    </div>
+   </div>
+ </div>
+ 
+@@ -444,6 +533,14 @@
+     <div id="settings-shelf-list" class="settings-list"></div>
+     <div class="settings-section">
+       <div class="settings-row">
++        <span>Appearance</span>
++        <div class="seg-ctrl" id="theme-seg" role="radiogroup" aria-label="Theme">
++          <button class="seg-opt" data-theme-opt="light" role="radio"><i class="ti ti-sun"></i> Light</button>
++          <button class="seg-opt" data-theme-opt="auto"  role="radio">Auto</button>
++          <button class="seg-opt" data-theme-opt="dark"  role="radio"><i class="ti ti-moon"></i> Dark</button>
++        </div>
++      </div>
++      <div class="settings-row" style="margin-top:12px">
+         <span>Default language</span>
+         <select id="settings-default-lang" class="settings-select">
+           <option value="telugu">Telugu</option>
+@@ -456,6 +553,23 @@
+         <span>✨ Show AI story card when a song plays</span>
+         <input type="checkbox" id="settings-ai-anecdote">
+       </label>
++      <label class="settings-toggle" style="margin-top:10px">
++        <span>📶 Download songs ahead for offline play</span>
++        <input type="checkbox" id="settings-buffer">
++      </label>
++      <p class="settings-hint">Keeps the next few songs on the device so music
++        keeps playing through tunnels and dead zones. Uses mobile data.</p>
++      <label class="settings-toggle" style="margin-top:10px">
++        <span>📳 Vibrate on play, pause and skip</span>
++        <input type="checkbox" id="settings-haptics">
++      </label>
++      <label class="settings-toggle" style="margin-top:10px">
++        <span>☀️ Keep screen on while playing</span>
++        <input type="checkbox" id="settings-wakelock">
++      </label>
++      <p class="settings-hint" id="settings-wakelock-hint">Useful with the phone
++        mounted in a car or propped up in the kitchen. Uses more battery, and
++        only applies while Naada is on screen.</p>
+       <p class="settings-hint" id="settings-ai-hint" style="margin-top:8px"></p>
+     </div>
+ 
+@@ -518,11 +632,17 @@
+ 
+     <div class="about-block">
+       <div class="about-block-h"><i class="ti ti-cpu"></i> Under the hood</div>
+-      <p class="about-p">Vanilla JS PWA + a lightweight Flask service on Termux.
++      <p class="about-p">Vanilla JS PWA + a lightweight Flask service on an
++      always-on cloud server (OCI), behind Cloudflare for HTTPS.
+       DES-ECB stream decryption, multi-source lyrics, Gemini Flash AI with model
+       fallback, rotating logs, and graceful degradation throughout.</p>
+     </div>
+ 
++    <div class="about-block">
++      <div class="about-block-h"><i class="ti ti-device-mobile"></i> Playback &amp; install</div>
++      <div id="install-state" class="install-box"></div>
++    </div>
++
+     <!-- Your data: backup & restore -->
+     <div class="about-block">
+       <div class="about-block-h"><i class="ti ti-database-heart"></i> Your data</div>
+@@ -553,6 +673,9 @@
+   </div>
+ </div>
+ 
++
++
++
+ <!-- ── Sleep timer modal ──────────────────────────────────────────────── -->
+ <div class="modal-back" id="sleep-modal" role="dialog" aria-modal="true" aria-label="Sleep timer">
+   <div class="modal">
+@@ -581,9 +704,82 @@
+   </div>
+ </div>
+ 
++<!-- ── Sleep timer ────────────────────────────────────────────────────── -->
++
++
++<!-- ── Track context menu (long-press any song) ───────────────────────── -->
++<div class="modal-back" id="track-menu" role="dialog" aria-modal="true" aria-label="Song options">
++  <div class="modal">
++    <div class="modal-handle"></div>
++    <div class="tm-head" id="tm-head">
++      <div class="tm-art" id="tm-art">🎵</div>
++      <div class="tm-info">
++        <div class="tm-title" id="tm-title">—</div>
++        <div class="tm-artist" id="tm-artist"></div>
++      </div>
++    </div>
++    <div class="modal-opts" id="tm-opts"></div>
++    <button class="modal-cancel" id="tm-cancel">Cancel</button>
++  </div>
++</div>
++
++<!-- ── Playlist actions (⋮ on a playlist) ─────────────────────────────── -->
++<div class="modal-back" id="pl-menu" role="dialog" aria-modal="true" aria-label="Playlist options">
++  <div class="modal">
++    <div class="modal-handle"></div>
++    <div class="modal-title" id="pl-menu-title">Playlist</div>
++    <div class="modal-opts" id="pl-menu-opts"></div>
++    <button class="modal-cancel" id="pl-menu-cancel">Cancel</button>
++  </div>
++</div>
++
++<!-- ── Bulk-select action bar (playlist detail edit mode) ─────────────── -->
++<div class="bulk-bar" id="bulk-bar">
++  <span class="bulk-count" id="bulk-count">0 selected</span>
++  <div class="bulk-actions">
++    <button class="bulk-btn" id="bulk-copy"><i class="ti ti-copy"></i> Copy to…</button>
++    <button class="bulk-btn" id="bulk-move"><i class="ti ti-arrow-move-right"></i> Move to…</button>
++    <button class="bulk-btn danger" id="bulk-remove"><i class="ti ti-trash"></i> Remove</button>
++  </div>
++</div>
++
++<!-- ── Move to folder picker ──────────────────────────────────────────── -->
++<div class="sheet" id="folder-pick-sheet" role="dialog" aria-modal="true" aria-label="Move to folder">
++  <div class="sheet-handle"></div>
++  <div class="sheet-header">
++    <button class="icon-btn" id="folder-pick-close" aria-label="Close"><i class="ti ti-x"></i></button>
++    <span class="sheet-title">Move to folder</span>
++    <button class="icon-btn" id="folder-pick-new" aria-label="New folder"><i class="ti ti-plus"></i></button>
++  </div>
++  <div class="sheet-body">
++    <div id="folder-pick-list" class="pl-select-list"></div>
++  </div>
++</div>
++
++<!-- ── Folder actions ─────────────────────────────────────────────────── -->
++<div class="modal-back" id="folder-menu" role="dialog" aria-modal="true" aria-label="Folder options">
++  <div class="modal">
++    <div class="modal-handle"></div>
++    <div class="modal-title" id="folder-menu-title">Folder</div>
++    <div class="modal-opts" id="folder-menu-opts"></div>
++    <button class="modal-cancel" id="folder-menu-cancel">Cancel</button>
++  </div>
++</div>
++
++<!-- ── Create / rename folder ─────────────────────────────────────────── -->
++<div class="modal-back" id="folder-name-modal" role="dialog" aria-modal="true" aria-label="Folder name">
++  <div class="modal">
++    <div class="modal-handle"></div>
++    <div class="modal-title" id="folder-name-title">New Folder</div>
++    <input class="modal-input" id="folder-name-input" type="text" placeholder="Folder name…" maxlength="60">
++    <button class="modal-primary" id="folder-name-confirm">Create Folder</button>
++    <button class="modal-cancel" id="folder-name-cancel">Cancel</button>
++  </div>
++</div>
++
+ <!-- ── Toast ──────────────────────────────────────────────────────────── -->
+ <div class="toast" id="toast" role="status" aria-live="polite"></div>
+ 
+-<script src="/static/app.js?v=22"></script>
++<script src="/static/app.js?v=42"></script>
+ </body>
+ </html>
+diff --git a/static/manifest.json b/static/manifest.json
+index 5a8f0b3..95e4c39 100644
+--- a/static/manifest.json
++++ b/static/manifest.json
+@@ -1,25 +1,59 @@
+ {
+-  "name": "Naada · నాద",
++  "name": "Naada \u00b7 \u0c28\u0c3e\u0c26",
+   "short_name": "Naada",
+-  "description": "Your personal Indian music player — ad-free, 320kbps",
++  "description": "Your personal Indian music player \u2014 ad-free, 320kbps",
+   "start_url": "/",
++  "scope": "/",
+   "id": "/",
+   "display": "standalone",
+-  "display_override": ["standalone", "minimal-ui"],
++  "display_override": [
++    "standalone",
++    "minimal-ui"
++  ],
+   "background_color": "#FAFAF8",
+   "theme_color": "#4A1A6B",
+   "orientation": "portrait-primary",
+-  "categories": ["music", "entertainment"],
++  "categories": [
++    "music",
++    "entertainment"
++  ],
+   "icons": [
+-    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+-    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+-    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+-    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+-    { "src": "/static/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
++    {
++      "src": "/static/icons/icon-192.png",
++      "sizes": "192x192",
++      "type": "image/png",
++      "purpose": "any"
++    },
++    {
++      "src": "/static/icons/icon-512.png",
++      "sizes": "512x512",
++      "type": "image/png",
++      "purpose": "any"
++    },
++    {
++      "src": "/static/icons/maskable-192.png",
++      "sizes": "192x192",
++      "type": "image/png",
++      "purpose": "maskable"
++    },
++    {
++      "src": "/static/icons/maskable-512.png",
++      "sizes": "512x512",
++      "type": "image/png",
++      "purpose": "maskable"
++    }
+   ],
+   "shortcuts": [
+-    { "name": "Search", "url": "/?tab=search", "description": "Search for songs" },
+-    { "name": "Liked Songs", "url": "/?tab=library", "description": "My liked songs" }
++    {
++      "name": "Search",
++      "url": "/?tab=search",
++      "description": "Search for songs"
++    },
++    {
++      "name": "Liked Songs",
++      "url": "/?tab=library",
++      "description": "My liked songs"
++    }
+   ],
+   "prefer_related_applications": false
+-}
++}
+\ No newline at end of file
+diff --git a/static/sw.js b/static/sw.js
+index 4842633..422976c 100644
+--- a/static/sw.js
++++ b/static/sw.js
+@@ -1,5 +1,5 @@
+ // Bump VER on every release to invalidate old caches.
+-const VER   = "naada-v22";
++const VER   = "naada-v42";
+ const SHELL = ["/", "/static/index.html", "/static/app.css",
+                "/static/app.js", "/manifest.json", "/static/icons/icon.svg"];
+ 
+@@ -11,7 +11,12 @@ self.addEventListener("install", e => {
+ self.addEventListener("activate", e => {
+   e.waitUntil(
+     caches.keys().then(keys =>
+-      Promise.all(keys.filter(k => k !== VER).map(k => caches.delete(k)))
++      // Drop stale app-shell caches, but KEEP the audio buffer — it holds
++      // pre-downloaded songs for offline playback and shouldn't be wiped
++      // just because we shipped a UI update. It manages its own eviction.
++      Promise.all(keys
++        .filter(k => k !== VER && !k.startsWith("naada-audio"))
++        .map(k => caches.delete(k)))
+     ).then(() => self.clients.claim())   // take control of open pages now
+   );
+ });
+@@ -20,8 +25,20 @@ self.addEventListener("fetch", e => {
+   const { request } = e;
+   const url = new URL(request.url);
+ 
+-  // API + cross-origin (audio CDN): always network, never cache
+-  if (url.pathname.startsWith("/api/") || url.hostname !== location.hostname) {
++  // ── Media and every cross-origin request: DO NOT TOUCH ──────────────
++  // Never call respondWith() here. Piping audio through the service
++  // worker breaks HTTP Range requests (seeking, progressive buffering)
++  // and — worse — ties the stream's lifetime to the worker. Android is
++  // free to terminate a service worker while the app is backgrounded, so
++  // a proxied stream simply stops when you minimise the app. Letting the
++  // request go straight to the network keeps playback owned by the media
++  // stack, which is exactly what survives backgrounding.
++  if (url.hostname !== location.hostname) return;
++  if (request.destination === "audio" || request.destination === "video") return;
++  if (request.headers.has("range")) return;
++
++  // Same-origin API: always network, never cache
++  if (url.pathname.startsWith("/api/")) {
+     e.respondWith(
+       fetch(request).catch(() =>
+         new Response(JSON.stringify({error:"offline"}),

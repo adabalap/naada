@@ -55,11 +55,11 @@
        app.js MAY later swap in an animated canvas version, but only if
        that genuinely succeeds — these static links always remain as the
        floor, so the tab is never blank. -->
-  <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png?v=41">
-  <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png?v=41">
-  <link rel="icon" type="image/png" sizes="48x48" href="/static/icons/favicon-48.png?v=41">
-  <link rel="shortcut icon" href="/static/icons/favicon.ico?v=41">
-  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png?v=41">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32.png?v=42">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16.png?v=42">
+  <link rel="icon" type="image/png" sizes="48x48" href="/static/icons/favicon-48.png?v=42">
+  <link rel="shortcut icon" href="/static/icons/favicon.ico?v=42">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180.png?v=42">
   <script>
   /* Resolve theme before first paint to avoid a flash. "auto" follows the OS. */
   (function () {
@@ -73,7 +73,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/app.css?v=41">
+  <link rel="stylesheet" href="/static/app.css?v=42">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.7.0/dist/tabler-icons.min.css">
 </head>
 <body>
@@ -414,6 +414,7 @@
     </div>
     <div class="mini-controls">
       <button class="mini-btn" id="mini-like" aria-label="Like"><i class="ti ti-heart"></i></button>
+      <button class="mini-btn" id="mini-prev" aria-label="Previous"><i class="ti ti-player-skip-back"></i></button>
       <button class="mini-btn mini-play" id="mini-play" aria-label="Play / Pause"><i class="ti ti-player-play" id="mini-pp-icon"></i></button>
       <button class="mini-btn" id="mini-next" aria-label="Next"><i class="ti ti-player-skip-forward"></i></button>
     </div>
@@ -562,6 +563,13 @@
         <span>📳 Vibrate on play, pause and skip</span>
         <input type="checkbox" id="settings-haptics">
       </label>
+      <label class="settings-toggle" style="margin-top:10px">
+        <span>☀️ Keep screen on while playing</span>
+        <input type="checkbox" id="settings-wakelock">
+      </label>
+      <p class="settings-hint" id="settings-wakelock-hint">Useful with the phone
+        mounted in a car or propped up in the kitchen. Uses more battery, and
+        only applies while Naada is on screen.</p>
       <p class="settings-hint" id="settings-ai-hint" style="margin-top:8px"></p>
     </div>
 
@@ -772,6 +780,6 @@
 <!-- ── Toast ──────────────────────────────────────────────────────────── -->
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=41"></script>
+<script src="/static/app.js?v=42"></script>
 </body>
 </html>

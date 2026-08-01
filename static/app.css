@@ -1773,12 +1773,20 @@ html[data-theme="dark"] .lib-hero { filter: saturate(1.05); }
    compact design), each control gets an invisible centred hit area via
    ::after. Visuals are pixel-identical; the tappable region grows.
 ═══════════════════════════════════════════════════════════════ */
-.icon-btn, .mini-like, .mini-play, .mini-next,
-.to-top, .lang-pill, .pl-card-menu, .now-act {
+/* IMPORTANT: only elements that are position:static belong in this list.
+   An earlier version included .to-top and .pl-card-menu, which are already
+   position:fixed and position:absolute respectively — declaring `relative`
+   here silently overrode them, so the scroll-to-top button fell out of its
+   fixed corner and landed inline on the left, and the album card's ⋮ button
+   left its corner. They still get the enlarged hit area below; `absolute`
+   and `fixed` are positioned ancestors too, so ::after works fine on them. */
+.icon-btn, .mini-like, .mini-play, .mini-next, .mini-prev,
+.lang-pill, .now-act {
   position: relative;
 }
 .icon-btn::after, .mini-like::after, .mini-play::after, .mini-next::after,
-.to-top::after, .lang-pill::after, .pl-card-menu::after, .now-act::after {
+.mini-prev::after, .to-top::after, .lang-pill::after,
+.pl-card-menu::after, .now-act::after {
   content: "";
   position: absolute;
   top: 50%; left: 50%;
