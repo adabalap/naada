@@ -1,0 +1,135 @@
+name: Build Naada APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'static/**'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build signed APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install platform + build tools
+        run: |
+          sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;25.2.9519653" \
+          2>&1 | tail -5
+
+      - name: Sync frontend assets
+        run: |
+          # If static/ exists at the repo root (full-repo layout), copy it
+          # into the Android Python assets directory so it's bundled in the APK.
+          # If static/ doesn't exist at root, the assets bundled inside
+          # android/app/src/main/python/static/ are used as-is.
+          if [ -d "static" ]; then
+            echo "Found static/ at repo root — syncing into Android assets"
+            mkdir -p android/app/src/main/python/static
+            cp -r static/. android/app/src/main/python/static/
+            echo "Copied $(find static -type f | wc -l) files"
+          elif [ -d "android/app/src/main/python/static" ]; then
+            echo "Using pre-bundled static/ from android/app/src/main/python/static/"
+            ls android/app/src/main/python/static/ | head -5
+          else
+            echo "ERROR: No static/ assets found. Add static/ to the repo root or bundle it."
+            exit 1
+          fi
+
+      - name: Set version
+        id: version
+        run: |
+          CODE=$((1047 + ${{ github.run_number }}))
+          NAME="1.0.${{ github.run_number }}"
+          echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          node -e "
+            const fs=require('fs');
+            let g=fs.readFileSync('android/app/build.gradle','utf8');
+            g=g.replace(/versionCode \d+/,'versionCode '+$CODE);
+            g=g.replace(/versionName \"[^\"]+\"/,'versionName \"$NAME\"');
+            fs.writeFileSync('android/app/build.gradle',g);
+          "
+          echo "Version: $NAME (code $CODE)"
+
+      - name: Build release APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon 2>&1 | tail -30
+
+      - name: Locate APK
+        run: |
+          APK=$(find android -name "*release*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "ERROR: No APK found after build"
+            find android -name "*.apk" 2>/dev/null
+            exit 1
+          fi
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          cp "$APK" "naada-${{ env.VERSION_NAME }}.apk"
+          ls -lh "naada-${{ env.VERSION_NAME }}.apk"
+
+      - name: Print SHA-256 fingerprint
+        id: fp
+        run: |
+          FP=$(keytool -list -v \
+            -keystore android/app/naada-release.keystore \
+            -alias naada \
+            -storepass naada2024 2>/dev/null \
+            | grep "SHA256:" | head -1 | sed 's/.*SHA256: //')
+          echo "FINGERPRINT=$FP" >> "$GITHUB_ENV"
+          echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
+          echo "Fingerprint: $FP"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: naada-${{ env.VERSION_NAME }}
+          path: naada-${{ env.VERSION_NAME }}.apk
+          retention-days: 30
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION_NAME }}
+          name: Naada v${{ env.VERSION_NAME }}
+          body: |
+            Built from `${{ github.sha }}`
+
+            **Install:** Download the APK, enable "Install unknown apps", tap to install.
+            *(Uninstall any previous Naada/Chrome PWA first if Android complains.)*
+
+            **Gemini key (for AI features):**
+            Open Naada → Settings → AI & Config → paste key → Save → Test
+            Free key: https://aistudio.google.com/app/apikey
+
+            **Remove address bar (one-time OCI step):**
+            ```
+            export NAADA_APK_FINGERPRINT="${{ steps.fp.outputs.fingerprint }}"
+            ./naada.sh restart
+            ```
+          files: naada-${{ env.VERSION_NAME }}.apk

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Network: needed for JioSaavn streaming and Gemini AI -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Foreground service: this is what keeps music playing when minimised.
+         Unlike a browser tab, a foreground service with the MEDIA type is
+         explicitly protected from battery management by Android. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+
+    <!-- Wake lock: keeps CPU awake while playing, even screen-off.
+         This is different from the web Screen Wake Lock (which can't help
+         background playback). A native wake lock is held by the foreground
+         service process, not a browser tab, so it works. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Notifications: Android 13+ requires explicit permission -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Storage: for local music library if added later -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.Naada"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:hardwareAccelerated="true"
+        android:supportsRtl="false">
+
+        <!-- Main activity: full-screen WebView loading the Naada UI -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Flask server service: runs in its own process so a crash in
+             the Python layer cannot take down the UI or media session. -->
+        <service
+            android:name=".FlaskServerService"
+            android:enabled="true"
+            android:exported="false"
+            android:process=":flask" />
+
+        <!-- Media session service: this is what gives Naada its own media
+             notification with its own icon, and ensures Android classifies
+             playback as "media" rather than "Chrome audio", which gives it
+             protected status from battery optimization. -->
+        <service
+            android:name=".NaadaMediaService"
+            android:enabled="true"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
+
+        <!-- Broadcast receiver for headphone buttons and lock-screen controls -->
+        <receiver
+            android:name="androidx.media.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

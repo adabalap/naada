@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Naada</string>
+    <string name="app_name_telugu">నాద</string>
+    <string name="channel_playback">Music Playback</string>
+    <string name="channel_playback_desc">Naada playback controls</string>
+</resources>

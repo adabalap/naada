@@ -1,0 +1,100 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'com.chaquo.python'  // embeds Python + pip packages in the APK
+}
+
+android {
+    namespace 'com.adabala.naada'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.adabala.naada"
+        minSdk 26           // Android 8.0 — needed for foreground service
+        targetSdk 34        //  improvements and notification channels
+        versionCode 1
+        versionName "1.0"
+
+        // Chaquopy: which Python to embed.  3.11 is stable and fast.
+        python {
+            version "3.11"
+            // Every package listed here is compiled ahead-of-time and
+            // bundled in the APK.  No internet or pip on the device.
+            pip {
+                install "flask==3.0.3"
+                install "werkzeug==3.0.3"
+                install "requests==2.32.3"
+                install "cryptography==42.0.8"   // DES-ECB stream decryption
+                install "urllib3==2.2.1"
+                install "certifi"
+                install "charset-normalizer"
+                install "idna"
+            }
+        }
+
+        // Build for both 32-bit and 64-bit ARM (covers all modern Android
+        // phones) plus x86_64 for emulators.
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86_64"
+        }
+    }
+
+    signingConfigs {
+        release {
+            // The keystore is committed directly to the repo — no GitHub Secrets
+            // needed. "Don't commit keystores" advice targets Play Store apps where
+            // someone with your key could push malicious updates to millions of
+            // users. For a personal sideloaded APK that never hits the Play Store,
+            // the practical risk is near zero. The fingerprint is stable across
+            // every build, so assetlinks.json keeps working and updates install
+            // over previous versions without reinstalling.
+            storeFile     file("naada-release.keystore")
+            storePassword "naada2024"
+            keyAlias      "naada"
+            keyPassword   "naada2024"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                         'proguard-rules.pro'
+            signingConfig signingConfigs.release
+        }
+        debug {
+            applicationIdSuffix ".debug"
+            versionNameSuffix "-debug"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    buildFeatures {
+        viewBinding true
+    }
+}
+
+dependencies {
+    // Core Android + Kotlin
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+    // Media session + notification
+    implementation 'androidx.media:media:1.7.0'
+    implementation 'com.google.android.exoplayer:exoplayer-core:2.19.1'
+    implementation 'com.google.android.exoplayer:extension-mediasession:2.19.1'
+
+    // WebView bridge extras
+    implementation 'androidx.webkit:webkit:1.9.0'
+}

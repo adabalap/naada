@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+        localhost is exempt from the HTTPS requirement: Flask runs there
+        on plain HTTP, and that is correct — there is nothing sensitive
+        on the loopback interface since it never leaves the device.
+        Everything else (JioSaavn CDN, Gemini AI, Cloudflare) is required
+        to use HTTPS, and that requirement is enforced by default.
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
