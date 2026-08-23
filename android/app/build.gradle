@@ -57,10 +57,13 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled true
-            shrinkResources true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
-                         'proguard-rules.pro'
+            // Minification is deliberately OFF. R8 would need to be taught
+            // about Chaquopy's Python runtime and the @JavascriptInterface
+            // bridge; get that wrong and you get an APK that builds cleanly
+            // then crashes at runtime. The size saving is negligible next to
+            // a bundled CPython interpreter, so the trade is not worth it.
+            minifyEnabled false
+            shrinkResources false
             signingConfig signingConfigs.release
         }
         debug {
@@ -86,14 +89,19 @@ android {
 dependencies {
     // Core Android + Kotlin
     implementation 'androidx.core:core-ktx:1.12.0'
+    // Coroutines: used by FlaskServerService and NaadaMediaService.
+    // Was missing, which is a hard compile error.
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 
-    // Media session + notification
+    // Media session + notification.
+    // Deliberately NOT pulling in ExoPlayer: the actual audio is played by
+    // the <audio> element inside the WebView, so an ExoPlayer instance would
+    // be dead weight and its media-session extension clashes with
+    // androidx.media on the same MediaSessionCompat classes.
     implementation 'androidx.media:media:1.7.0'
-    implementation 'com.google.android.exoplayer:exoplayer-core:2.19.1'
-    implementation 'com.google.android.exoplayer:extension-mediasession:2.19.1'
 
     // WebView bridge extras
     implementation 'androidx.webkit:webkit:1.9.0'

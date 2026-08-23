@@ -1,5 +1,5 @@
 // Bump VER on every release to invalidate old caches.
-const VER   = "naada-v47";
+const VER   = "naada-v48";
 const SHELL = ["/", "/static/index.html", "/static/app.css",
                "/static/app.js", "/manifest.json",
                // The tab icons belong in the precache too. Without them a

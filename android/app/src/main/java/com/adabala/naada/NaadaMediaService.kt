@@ -8,6 +8,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Binder
+import android.os.Bundle
 import android.os.IBinder
 import android.support.v4.media.MediaBrowserCompat
 import android.support.v4.media.MediaMetadataCompat
@@ -195,10 +196,14 @@ class NaadaMediaService : MediaBrowserServiceCompat() {
     }
 
     private fun sendToWebView(js: String) {
-        // MainActivity is a singleton (singleTask); grab it to run JS
-        (application as? NaadaApplication)?.mainActivity?.runOnUiThread {
-            (application as? NaadaApplication)?.mainActivity?.webView
-                ?.evaluateJavascript(js, null)
+        // MainActivity is singleTask, so there is at most one. It may be null
+        // (activity destroyed while playback continues) and its webView is
+        // lateinit, so reading it before onCreate finishes would throw
+        // UninitializedPropertyAccessException — hence the runCatching.
+        val act = (application as? NaadaApplication)?.mainActivity ?: return
+        act.runOnUiThread {
+            runCatching { act.webView.evaluateJavascript(js, null) }
+                .onFailure { Log.w(TAG, "WebView not ready for: $js") }
         }
     }
 
@@ -228,7 +233,7 @@ class NaadaMediaService : MediaBrowserServiceCompat() {
     // media, so these return empty/null
     override fun onGetRoot(clientPackageName: String, clientUid: Int,
                            rootHints: Bundle?) =
-        BrowserRoot("naada_root", null)
+        BrowserRoot("naada_root", null)   // nested type, resolved via superclass
 
     override fun onLoadChildren(parentId: String,
                                 result: Result<MutableList<MediaBrowserCompat.MediaItem>>) {

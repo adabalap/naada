@@ -19,7 +19,9 @@ import android.os.Build
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var webView: WebView
+    // internal, not private: NaadaMediaService needs this to push JS
+    // transport commands in from the lock screen / headphone buttons.
+    internal lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
     private var mediaService: NaadaMediaService? = null
     private var serverReady = false
@@ -46,6 +48,11 @@ class MainActivity : AppCompatActivity() {
                     arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
             }
         }
+
+        // Register with the Application object. NaadaMediaService looks the
+        // activity up here to run JavaScript when a transport control is
+        // pressed. Without this the lock-screen buttons do nothing.
+        (application as? NaadaApplication)?.mainActivity = this
 
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.web_view)
@@ -120,36 +127,19 @@ class MainActivity : AppCompatActivity() {
      * This means we do NOT need to change app.js at all — the bridge sits
      * underneath and listens.
      */
+    /**
+     * Tell the web layer that a native bridge is available.
+     *
+     * An earlier version monkey-patched MediaSession.prototype from here to
+     * intercept metadata writes. That was fragile — it depended on internal
+     * property descriptors and broke silently if the browser changed them.
+     * Instead app.js checks for window.NaadaBridge and calls it directly
+     * from updateMediaSession(), which is explicit and cannot silently fail.
+     */
     private fun injectBridgeScript() {
-        val script = """
-            (function() {
-                if (!navigator.mediaSession || !window.NaadaBridge) return;
-                // Wrap setMetadata so native layer always gets the track info
-                const origMeta = Object.getOwnPropertyDescriptor(
-                    MediaSession.prototype, 'metadata');
-                if (!origMeta) return;
-                Object.defineProperty(navigator.mediaSession, 'metadata', {
-                    set: function(v) {
-                        if (origMeta.set) origMeta.set.call(this, v);
-                        if (v) {
-                            const art = (v.artwork && v.artwork[0])
-                                        ? v.artwork[0].src : '';
-                            window.NaadaBridge.onTrackChange(
-                                v.title || '', v.artist || '', v.album || '', art);
-                        }
-                    },
-                    get: origMeta.get
-                });
-                // Mirror play/pause state
-                navigator.mediaSession.setActionHandler('play', function() {
-                    window.NaadaBridge.onPlaybackState(true);
-                });
-                navigator.mediaSession.setActionHandler('pause', function() {
-                    window.NaadaBridge.onPlaybackState(false);
-                });
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(script, null)
+        webView.evaluateJavascript(
+            "window.__naadaNative = true;" +
+            "window.dispatchEvent(new Event('naada-native-ready'));", null)
     }
 
     /** JavaScript-accessible interface exposed as window.NaadaBridge */
@@ -175,6 +165,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if ((application as? NaadaApplication)?.mainActivity === this) {
+            (application as? NaadaApplication)?.mainActivity = null
+        }
         unbindService(serviceConnection)
         webView.destroy()
     }

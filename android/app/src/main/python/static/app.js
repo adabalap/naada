@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v47";
+const APP_VERSION = "v48";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -658,6 +658,12 @@ function setPlayIcons(playing) {
   // Reflect state in the OS media notification / lock screen
   if ("mediaSession" in navigator) {
     try { navigator.mediaSession.playbackState = playing ? "playing" : "paused"; } catch {}
+    // Keep the native Android notification's play/pause button in step.
+    try {
+      if (window.NaadaBridge && typeof window.NaadaBridge.onPlaybackState === "function") {
+        window.NaadaBridge.onPlaybackState(!!playing);
+      }
+    } catch {}
   }
 }
 
@@ -668,6 +674,19 @@ function setPlayIcons(playing) {
    website — only a native app could. This controls everything else.) */
 function updateMediaSession(t) {
   if (!("mediaSession" in navigator) || !t) return;
+
+  // When running inside the Naada Android app, hand the track to the native
+  // MediaSessionService as well. That service owns the real Android media
+  // notification, which is why the APK shows Naada's own icon where the PWA
+  // is stuck with Chrome's. Wrapped in try/catch and a presence check so the
+  // exact same file still runs unchanged in a plain browser.
+  try {
+    if (window.NaadaBridge && typeof window.NaadaBridge.onTrackChange === "function") {
+      window.NaadaBridge.onTrackChange(
+        t.title || "", t.artist || "", t.album || "Naada", t.image || "");
+    }
+  } catch {}
+
   try {
     const art = t.image || "";
     const artwork = art ? [

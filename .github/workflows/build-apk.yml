@@ -1,10 +1,5 @@
 name: Build Naada APK
 
-# Triggers:
-#   - Every push to main (no path filter — simpler and more reliable)
-#   - Manual trigger from Actions tab (the "Run workflow" button)
-#   - On a schedule: every Sunday at midnight, so you always have a fresh
-#     build even without pushing (optional, remove if not wanted)
 on:
   push:
     branches: [main]
@@ -14,8 +9,6 @@ on:
         description: 'Reason for manual build (optional)'
         required: false
         default: 'Manual build'
-  schedule:
-    - cron: '0 0 * * 0'   # every Sunday midnight UTC
 
 jobs:
   build:
@@ -33,88 +26,89 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
+
+      # Install Gradle directly. This deliberately avoids ./gradlew: the
+      # Gradle wrapper needs a binary gradle-wrapper.jar committed to the
+      # repo, and if it is missing (or corrupt) the build dies instantly
+      # with "Unable to access jarfile" before producing any output — which
+      # is exactly what happened. Installing Gradle removes that dependency
+      # entirely and keeps a binary blob out of the repo.
+      - name: Set up Gradle 8.4
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.4'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install platform + build tools
+      - name: Accept licences and install SDK packages
         run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
           sdkmanager --install \
             "platforms;android-34" \
             "build-tools;34.0.0" \
-            "ndk;25.2.9519653" \
+            "ndk;26.1.10909125" \
+            "cmake;3.22.1" \
           2>&1 | tail -5
 
       - name: Sync frontend assets
         run: |
-          # If static/ exists at the repo root (full-repo layout), copy it
-          # into the Android Python assets so it's bundled in the APK.
-          # If not, the assets already bundled inside android/ are used.
           if [ -d "static" ]; then
             echo "Found static/ at repo root — syncing into Android assets"
             mkdir -p android/app/src/main/python/static
             cp -r static/. android/app/src/main/python/static/
             echo "Copied $(find static -type f | wc -l) files"
           elif [ -d "android/app/src/main/python/static" ]; then
-            COUNT=$(find android/app/src/main/python/static -type f | wc -l)
-            echo "Using pre-bundled assets ($COUNT files in android/app/src/main/python/static/)"
+            echo "Using pre-bundled assets ($(find android/app/src/main/python/static -type f | wc -l) files)"
           else
-            echo "ERROR: No frontend assets found. Add static/ to the repo root."
+            echo "ERROR: No frontend assets found."
             exit 1
           fi
 
       - name: Set version
-        id: version
         run: |
           CODE=$((1047 + ${{ github.run_number }}))
           NAME="1.0.${{ github.run_number }}"
           echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
           echo "VERSION_NAME=$NAME" >> "$GITHUB_ENV"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          node -e "
-            const fs = require('fs');
-            let g = fs.readFileSync('android/app/build.gradle', 'utf8');
-            g = g.replace(/versionCode \d+/, 'versionCode ' + $CODE);
-            g = g.replace(/versionName \"[^\"]+\"/, 'versionName \"$NAME\"');
-            fs.writeFileSync('android/app/build.gradle', g);
-            console.log('Version set to $NAME / code $CODE');
-          "
+          sed -i "s/versionCode [0-9]\+/versionCode $CODE/" android/app/build.gradle
+          sed -i "s/versionName \"[^\"]*\"/versionName \"$NAME\"/" android/app/build.gradle
+          echo "Building version $NAME (code $CODE)"
 
+      # --stacktrace and the full log matter: the previous failure showed
+      # only "No APK found" because the real Gradle error was swallowed.
       - name: Build release APK
         working-directory: android
         run: |
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon 2>&1 | tail -30
+          gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/build.log
+        continue-on-error: true
+
+      - name: Show build errors if it failed
+        run: |
+          if ! find android -name "*.apk" | grep -q .; then
+            echo "════════ BUILD FAILED — last 120 lines ════════"
+            tail -120 /tmp/build.log || echo "(no log captured)"
+            echo "═══════════════════════════════════════════════"
+            exit 1
+          fi
+          echo "Build produced an APK."
 
       - name: Locate APK
         run: |
           APK=$(find android -name "*release*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            echo "ERROR: No APK found. Build output:"
-            find android -name "*.apk" 2>/dev/null || echo "No APKs at all"
-            exit 1
-          fi
+          [ -z "$APK" ] && APK=$(find android -name "*.apk" | head -1)
           cp "$APK" "naada-${{ env.VERSION_NAME }}.apk"
-          echo "APK: $(ls -lh naada-${{ env.VERSION_NAME }}.apk)"
+          ls -lh "naada-${{ env.VERSION_NAME }}.apk"
 
       - name: Print SHA-256 fingerprint
         id: fp
         run: |
           FP=$(keytool -list -v \
             -keystore android/app/naada-release.keystore \
-            -alias naada \
-            -storepass naada2024 2>/dev/null \
-            | grep "SHA256:" | head -1 \
-            | sed 's/.*SHA256: //')
-          echo "FINGERPRINT=$FP" >> "$GITHUB_ENV"
+            -alias naada -storepass naada2024 2>/dev/null \
+            | grep "SHA256:" | head -1 | sed 's/.*SHA256: //')
           echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Set on OCI to remove the address bar:"
-          echo "  export NAADA_APK_FINGERPRINT=\"$FP\""
-          echo "  ./naada.sh restart"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Fingerprint: $FP"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -131,19 +125,15 @@ jobs:
           name: Naada v${{ env.VERSION_NAME }}
           body: |
             Built from `${{ github.sha }}`
-            ${{ github.event_name == 'workflow_dispatch' && format('Manual build: {0}', github.event.inputs.reason) || '' }}
 
-            **Install**
-            1. Download `naada-*.apk` below
-            2. Phone: Settings → Apps → Special app access → Install unknown apps → allow
-            3. Tap the APK to install *(uninstall any previous Naada first)*
+            **Install:** download the APK, enable "Install unknown apps", tap to install.
+            Uninstall any previous Naada or the Chrome PWA first.
 
-            **Gemini AI key**
-            Naada → Settings → AI & Config → paste key → Save → Test
+            **Gemini key:** Naada → Settings → AI & Config → paste → Save → Test
             Free key: https://aistudio.google.com/app/apikey
 
-            **Remove address bar** *(one-time OCI step)*
-            ```bash
+            **Remove address bar (one-time, on OCI):**
+            ```
             export NAADA_APK_FINGERPRINT="${{ steps.fp.outputs.fingerprint }}"
             ./naada.sh restart
             ```
