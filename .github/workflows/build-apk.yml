@@ -1,13 +1,21 @@
 name: Build Naada APK
 
+# Triggers:
+#   - Every push to main (no path filter — simpler and more reliable)
+#   - Manual trigger from Actions tab (the "Run workflow" button)
+#   - On a schedule: every Sunday at midnight, so you always have a fresh
+#     build even without pushing (optional, remove if not wanted)
 on:
   push:
     branches: [main]
-    paths:
-      - 'android/**'
-      - 'static/**'
-      - '.github/workflows/build-apk.yml'
   workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual build (optional)'
+        required: false
+        default: 'Manual build'
+  schedule:
+    - cron: '0 0 * * 0'   # every Sunday midnight UTC
 
 jobs:
   build:
@@ -41,19 +49,18 @@ jobs:
       - name: Sync frontend assets
         run: |
           # If static/ exists at the repo root (full-repo layout), copy it
-          # into the Android Python assets directory so it's bundled in the APK.
-          # If static/ doesn't exist at root, the assets bundled inside
-          # android/app/src/main/python/static/ are used as-is.
+          # into the Android Python assets so it's bundled in the APK.
+          # If not, the assets already bundled inside android/ are used.
           if [ -d "static" ]; then
             echo "Found static/ at repo root — syncing into Android assets"
             mkdir -p android/app/src/main/python/static
             cp -r static/. android/app/src/main/python/static/
             echo "Copied $(find static -type f | wc -l) files"
           elif [ -d "android/app/src/main/python/static" ]; then
-            echo "Using pre-bundled static/ from android/app/src/main/python/static/"
-            ls android/app/src/main/python/static/ | head -5
+            COUNT=$(find android/app/src/main/python/static -type f | wc -l)
+            echo "Using pre-bundled assets ($COUNT files in android/app/src/main/python/static/)"
           else
-            echo "ERROR: No static/ assets found. Add static/ to the repo root or bundle it."
+            echo "ERROR: No frontend assets found. Add static/ to the repo root."
             exit 1
           fi
 
@@ -66,13 +73,13 @@ jobs:
           echo "VERSION_NAME=$NAME" >> "$GITHUB_ENV"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           node -e "
-            const fs=require('fs');
-            let g=fs.readFileSync('android/app/build.gradle','utf8');
-            g=g.replace(/versionCode \d+/,'versionCode '+$CODE);
-            g=g.replace(/versionName \"[^\"]+\"/,'versionName \"$NAME\"');
-            fs.writeFileSync('android/app/build.gradle',g);
+            const fs = require('fs');
+            let g = fs.readFileSync('android/app/build.gradle', 'utf8');
+            g = g.replace(/versionCode \d+/, 'versionCode ' + $CODE);
+            g = g.replace(/versionName \"[^\"]+\"/, 'versionName \"$NAME\"');
+            fs.writeFileSync('android/app/build.gradle', g);
+            console.log('Version set to $NAME / code $CODE');
           "
-          echo "Version: $NAME (code $CODE)"
 
       - name: Build release APK
         working-directory: android
@@ -84,13 +91,12 @@ jobs:
         run: |
           APK=$(find android -name "*release*.apk" | head -1)
           if [ -z "$APK" ]; then
-            echo "ERROR: No APK found after build"
-            find android -name "*.apk" 2>/dev/null
+            echo "ERROR: No APK found. Build output:"
+            find android -name "*.apk" 2>/dev/null || echo "No APKs at all"
             exit 1
           fi
-          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
           cp "$APK" "naada-${{ env.VERSION_NAME }}.apk"
-          ls -lh "naada-${{ env.VERSION_NAME }}.apk"
+          echo "APK: $(ls -lh naada-${{ env.VERSION_NAME }}.apk)"
 
       - name: Print SHA-256 fingerprint
         id: fp
@@ -99,10 +105,16 @@ jobs:
             -keystore android/app/naada-release.keystore \
             -alias naada \
             -storepass naada2024 2>/dev/null \
-            | grep "SHA256:" | head -1 | sed 's/.*SHA256: //')
+            | grep "SHA256:" | head -1 \
+            | sed 's/.*SHA256: //')
           echo "FINGERPRINT=$FP" >> "$GITHUB_ENV"
           echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
-          echo "Fingerprint: $FP"
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  Set on OCI to remove the address bar:"
+          echo "  export NAADA_APK_FINGERPRINT=\"$FP\""
+          echo "  ./naada.sh restart"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -111,7 +123,7 @@ jobs:
           path: naada-${{ env.VERSION_NAME }}.apk
           retention-days: 30
 
-      - name: Create Release
+      - name: Create GitHub Release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
@@ -119,16 +131,19 @@ jobs:
           name: Naada v${{ env.VERSION_NAME }}
           body: |
             Built from `${{ github.sha }}`
+            ${{ github.event_name == 'workflow_dispatch' && format('Manual build: {0}', github.event.inputs.reason) || '' }}
 
-            **Install:** Download the APK, enable "Install unknown apps", tap to install.
-            *(Uninstall any previous Naada/Chrome PWA first if Android complains.)*
+            **Install**
+            1. Download `naada-*.apk` below
+            2. Phone: Settings → Apps → Special app access → Install unknown apps → allow
+            3. Tap the APK to install *(uninstall any previous Naada first)*
 
-            **Gemini key (for AI features):**
-            Open Naada → Settings → AI & Config → paste key → Save → Test
+            **Gemini AI key**
+            Naada → Settings → AI & Config → paste key → Save → Test
             Free key: https://aistudio.google.com/app/apikey
 
-            **Remove address bar (one-time OCI step):**
-            ```
+            **Remove address bar** *(one-time OCI step)*
+            ```bash
             export NAADA_APK_FINGERPRINT="${{ steps.fp.outputs.fingerprint }}"
             ./naada.sh restart
             ```
