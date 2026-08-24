@@ -2,7 +2,11 @@ name: Build Naada APK
 
 on:
   push:
-    branches: [main]
+    # Accept both common default-branch names. A workflow filtered to
+    # `main` never fires on a repo whose default branch is `master`, and
+    # that failure is completely silent — no run, no error, nothing in the
+    # Actions tab. Listing both removes that whole class of confusion.
+    branches: [main, master]
   workflow_dispatch:
     inputs:
       reason:
@@ -19,10 +23,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -51,15 +55,55 @@ jobs:
             "cmake;3.22.1" \
           2>&1 | tail -5
 
+      # The release build needs the signing keystore. It fails hard with
+      # "Keystore file not found" if it is absent — which is what happens
+      # when a standard Android .gitignore (which contains "*.keystore")
+      # silently drops the binary during the push.
+      #
+      # So the key is ALSO committed base64-encoded as a .b64 TEXT file,
+      # which no keystore-ignore pattern matches. We reconstruct from that
+      # whenever the binary is missing. As a last resort we generate a fresh
+      # key so the build never hard-fails, but that changes the fingerprint,
+      # so we say so loudly.
+      - name: Ensure signing keystore
+        run: |
+          KS=android/app/naada-release.keystore
+          if [ -f "$KS" ]; then
+            echo "Keystore present."
+          elif [ -f android/app/naada-keystore.b64 ]; then
+            echo "Keystore binary missing — reconstructing from committed base64."
+            base64 -d < android/app/naada-keystore.b64 > "$KS"
+          else
+            echo "::warning::No keystore found. Generating a throwaway one."
+            echo "::warning::The APK will have a DIFFERENT signature, so you must"
+            echo "::warning::uninstall any existing Naada before installing it, and"
+            echo "::warning::your assetlinks fingerprint will no longer match."
+            keytool -genkeypair -noprompt \
+              -dname "CN=Naada, O=adabala, C=IN" \
+              -alias naada -keyalg RSA -keysize 2048 -validity 10000 \
+              -keystore "$KS" -storepass naada2024 -keypass naada2024
+          fi
+          echo "Keystore: $(stat -c%s "$KS") bytes"
+          keytool -list -v -keystore "$KS" -alias naada -storepass naada2024 2>/dev/null \
+            | grep "SHA256:" | head -1
+
+      # Runs in ~1 second and catches structural Kotlin errors that would
+      # otherwise cost a 2-minute Gradle run to discover. Specifically the
+      # nested-block-comment trap: Kotlin allows block comments to nest, so a
+      # stray slash-star inside a comment swallows the rest of the file and
+      # produces a cascade of misleading "unresolved reference" errors.
+      - name: Kotlin structural check
+        run: python3 check_kotlin.py
+
       - name: Sync frontend assets
         run: |
           if [ -d "static" ]; then
             echo "Found static/ at repo root — syncing into Android assets"
-            mkdir -p android/app/src/main/python/static
-            cp -r static/. android/app/src/main/python/static/
+            mkdir -p android/app/src/main/assets/static
+            cp -r static/. android/app/src/main/assets/static/
             echo "Copied $(find static -type f | wc -l) files"
-          elif [ -d "android/app/src/main/python/static" ]; then
-            echo "Using pre-bundled assets ($(find android/app/src/main/python/static -type f | wc -l) files)"
+          elif [ -d "android/app/src/main/assets/static" ]; then
+            echo "Using pre-bundled assets ($(find android/app/src/main/assets/static -type f | wc -l) files)"
           else
             echo "ERROR: No frontend assets found."
             exit 1
@@ -77,21 +121,83 @@ jobs:
 
       # --stacktrace and the full log matter: the previous failure showed
       # only "No APK found" because the real Gradle error was swallowed.
+      # Kotlin prints compile errors as lines beginning with "e: " in the
+      # NORMAL output. Two things were hiding them: piping through `tail -30`,
+      # and `--stacktrace`, whose enormous Gradle trace pushed the real errors
+      # off the end. We now capture everything, then extract the compiler
+      # diagnostics explicitly.
       - name: Build release APK
         working-directory: android
+        id: build
         run: |
-          gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/build.log
+          set -o pipefail
+          # -Pkotlin.compiler.execution.strategy=in-process is the important
+          # flag. By default Kotlin compiles inside its own daemon process,
+          # and that daemon's diagnostics do NOT reach Gradle's stdout — all
+          # you get on the main stream is the wrapper
+          # "CompilationErrorException: See log for more details", with the
+          # real file/line/message stranded in the daemon. Running in-process
+          # puts the actual errors on the stream we capture.
+          gradle assembleRelease \
+            --no-daemon \
+            --console=plain \
+            --stacktrace \
+            -Pkotlin.compiler.execution.strategy=in-process \
+            2>&1 | tee "$GITHUB_WORKSPACE/build.log"
         continue-on-error: true
 
-      - name: Show build errors if it failed
+      - name: Extract Kotlin compiler errors
+        if: always()
         run: |
-          if ! find android -name "*.apk" | grep -q .; then
-            echo "════════ BUILD FAILED — last 120 lines ════════"
-            tail -120 /tmp/build.log || echo "(no log captured)"
-            echo "═══════════════════════════════════════════════"
-            exit 1
+          LOG="$GITHUB_WORKSPACE/build.log"
+          [ -f "$LOG" ] || { echo "No build log produced."; exit 0; }
+
+          echo "══════════ KOTLIN / JAVA COMPILE ERRORS ══════════"
+          # "e:" = error, "w:" = warning, in the Kotlin compiler's format.
+          if grep -nE "^(e|w): " "$LOG"; then :; else echo "(none found)"; fi
+          echo
+
+          echo "══════════ 'error:' LINES (javac, AAPT, resources) ══════════"
+          grep -niE "error:|Unresolved reference|Type mismatch|overrides nothing|cannot find symbol|None of the following" "$LOG" | head -60 || echo "(none)"
+          echo
+
+          echo "══════════ GRADLE FAILURE SUMMARY ══════════"
+          sed -n '/^FAILURE: Build failed/,/^\* Try:/p' "$LOG" | head -40 || true
+          echo
+
+          echo "══════════ WHAT FAILED ══════════"
+          grep -E "^> Task .*FAILED|Execution failed for task" "$LOG" | head -20 || true
+          echo
+
+          # The log has been small enough every run so far that downloading an
+          # artifact to read it is pure friction. Print it inline when it is
+          # small; only fall back to "download it" for genuinely huge logs.
+          SIZE=$(wc -c < "$LOG")
+          echo "══════════ FULL BUILD LOG (${SIZE} bytes) ══════════"
+          if [ "$SIZE" -lt 400000 ]; then
+            cat "$LOG"
+          else
+            echo "(log is ${SIZE} bytes — too long to inline)"
+            echo "--- first 200 lines ---"; head -200 "$LOG"
+            echo "--- last 200 lines ---";  tail -200 "$LOG"
           fi
-          echo "Build produced an APK."
+          echo "══════════ END OF LOG ══════════"
+
+      # Keep the whole log even on success — invaluable for the next failure.
+      - name: Upload full build log
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 14
+
+      - name: Fail if the build did not succeed
+        if: steps.build.outcome != 'success'
+        run: |
+          echo "Gradle failed — see the extracted errors above, or download"
+          echo "the 'build-log' artifact for the complete output."
+          exit 1
 
       - name: Locate APK
         run: |
@@ -111,14 +217,14 @@ jobs:
           echo "Fingerprint: $FP"
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: naada-${{ env.VERSION_NAME }}
           path: naada-${{ env.VERSION_NAME }}.apk
           retention-days: 30
 
       - name: Create GitHub Release
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION_NAME }}

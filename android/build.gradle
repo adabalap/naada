@@ -1,5 +1,20 @@
-// Top-level build file. Classpath dependencies go here; module-level
-// settings go in app/build.gradle.
+// Top-level build file.
+//
+// IMPORTANT: there is deliberately NO `allprojects { repositories { ... } }`
+// or `subprojects { repositories { ... } }` block here.
+//
+// settings.gradle declares dependencyResolutionManagement, which centralises
+// repository configuration for all modules. If a build file *also* declares
+// repositories, Gradle aborts with:
+//
+//   "Build was configured to prefer settings repositories over project
+//    repositories but repository 'Google' was added by build file
+//    'build.gradle'"
+//
+// Repositories for MODULE dependencies belong in settings.gradle.
+// The buildscript block below is separate and is still required here: it
+// resolves the Gradle plugins themselves, which is not governed by
+// dependencyResolutionManagement.
 buildscript {
     repositories {
         google()
@@ -8,19 +23,11 @@ buildscript {
     dependencies {
         classpath "com.android.tools.build:gradle:8.2.2"
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22"
-        // Chaquopy: the Python SDK that lets us bundle Flask + all pip
-        // packages directly inside the APK.  No Python needed on the device.
+        // Chaquopy embeds CPython + pip packages inside the APK.
         classpath "com.chaquo.python:gradle:15.0.1"
     }
 }
 
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
-task clean(type: Delete) {
-    delete rootProject.buildDir
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
 }

@@ -18,13 +18,16 @@ android {
         // Chaquopy: which Python to embed.  3.11 is stable and fast.
         python {
             version "3.11"
-            // Every package listed here is compiled ahead-of-time and
-            // bundled in the APK.  No internet or pip on the device.
+            // Every package here is PURE PYTHON. That is deliberate:
+            // Chaquopy can only install native extensions for which it
+            // ships a prebuilt Android wheel, so a native dep like
+            // `cryptography` fails the build with "no matching
+            // distribution" unless the version happens to be one they
+            // built. DES is implemented in pure_des.py instead.
             pip {
                 install "flask==3.0.3"
                 install "werkzeug==3.0.3"
                 install "requests==2.32.3"
-                install "cryptography==42.0.8"   // DES-ECB stream decryption
                 install "urllib3==2.2.1"
                 install "certifi"
                 install "charset-normalizer"

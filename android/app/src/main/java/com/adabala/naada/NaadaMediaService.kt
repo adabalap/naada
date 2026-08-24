@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Binder
@@ -16,6 +17,7 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.media.MediaBrowserServiceCompat
 import androidx.media.app.NotificationCompat.MediaStyle
 import kotlinx.coroutines.*
@@ -50,9 +52,9 @@ class NaadaMediaService : MediaBrowserServiceCompat() {
         val service get() = this@NaadaMediaService
     }
 
-    override fun onBind(intent: Intent?): IBinder {
+    override fun onBind(intent: Intent?): IBinder? {
         return if (intent?.action == SERVICE_INTERFACE) {
-            super.onBind(intent)!!   // MediaBrowserServiceCompat binding
+            super.onBind(intent)     // MediaBrowserServiceCompat binding
         } else {
             binder                   // local binding from MainActivity
         }
@@ -62,7 +64,13 @@ class NaadaMediaService : MediaBrowserServiceCompat() {
         super.onCreate()
         createNotificationChannel()
         setupMediaSession()
-        startForeground(NOTIFICATION_ID, buildNotification(null, false))
+        // Android 14 (targetSdk 34) rejects startForeground() for a media
+        // service unless the type is supplied, with
+        // MissingForegroundServiceTypeException. ServiceCompat handles the
+        // older-API branching for us.
+        ServiceCompat.startForeground(
+            this, NOTIFICATION_ID, buildNotification(null, false),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         Log.i(TAG, "NaadaMediaService started — notification badge is Naada's")
     }
 
@@ -172,27 +180,27 @@ class NaadaMediaService : MediaBrowserServiceCompat() {
 
     private fun mediaPendingIntent(action: Long): PendingIntent {
         return PendingIntent.getService(this, action.toInt(),
-            Intent(this, NaadaMediaService::class.java).apply { putExtra("action", action) },
+            Intent(this, NaadaMediaService::class.java).apply { putExtra(EXTRA_ACTION, action) },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Handle transport commands sent via pending intents (media buttons)
-        intent?.getLongExtra("action", -1L)?.let { action ->
+        // Transport commands arriving from the notification's pending intents.
+        val action = intent?.getLongExtra(EXTRA_ACTION, -1L) ?: -1L
+        val tc = mediaSession.controller?.transportControls
+        if (tc != null) {
             when (action) {
-                PlaybackStateCompat.ACTION_PLAY_PAUSE ->
-                    mediaSession.controller.transportControls.let {
-                        if (mediaSession.controller.playbackState?.state
-                                == PlaybackStateCompat.STATE_PLAYING) it.pause()
-                        else it.play()
-                    }
-                PlaybackStateCompat.ACTION_SKIP_TO_NEXT     ->
-                    mediaSession.controller.transportControls.skipToNext()
-                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS ->
-                    mediaSession.controller.transportControls.skipToPrevious()
+                PlaybackStateCompat.ACTION_PLAY_PAUSE -> {
+                    val isPlaying = mediaSession.controller?.playbackState?.state ==
+                            PlaybackStateCompat.STATE_PLAYING
+                    if (isPlaying) tc.pause() else tc.play()
+                }
+                PlaybackStateCompat.ACTION_SKIP_TO_NEXT     -> tc.skipToNext()
+                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS -> tc.skipToPrevious()
+                else -> { /* no action extra: just a service start */ }
             }
         }
-        return START_STICKY   // restart if killed (battery manager won't kill foreground service)
+        return START_STICKY
     }
 
     private fun sendToWebView(js: String) {
@@ -232,11 +240,12 @@ class NaadaMediaService : MediaBrowserServiceCompat() {
     // MediaBrowserServiceCompat required overrides — we don't browse local
     // media, so these return empty/null
     override fun onGetRoot(clientPackageName: String, clientUid: Int,
-                           rootHints: Bundle?) =
-        BrowserRoot("naada_root", null)   // nested type, resolved via superclass
+                           rootHints: Bundle?): BrowserRoot {
+        return BrowserRoot("naada_root", null)
+    }
 
     override fun onLoadChildren(parentId: String,
-                                result: Result<MutableList<MediaBrowserCompat.MediaItem>>) {
+                                result: MediaBrowserServiceCompat.Result<MutableList<MediaBrowserCompat.MediaItem>>) {
         result.sendResult(mutableListOf())
     }
 
@@ -250,5 +259,6 @@ class NaadaMediaService : MediaBrowserServiceCompat() {
         private const val TAG = "NaadaMediaService"
         private const val CHANNEL_ID = "naada_playback"
         private const val NOTIFICATION_ID = 1
+        private const val EXTRA_ACTION = "action"
     }
 }

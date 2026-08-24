@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4A1A6B"/>
+      <stop offset="100%" style="stop-color:#1A0A3B"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#F59E0B"/>
+      <stop offset="50%" style="stop-color:#E11D75"/>
+      <stop offset="100%" style="stop-color:#0891B2"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F59E0B;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#E11D75;stop-opacity:0.6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+
+  <!-- Outer decorative ring -->
+  <circle cx="256" cy="256" r="190" fill="none" stroke="url(#ring)" stroke-width="2" stroke-dasharray="8 6" opacity="0.5"/>
+
+  <!-- Sound wave bars — stylised naada/sound -->
+  <!-- Center bar (tallest) -->
+  <rect x="244" y="148" width="24" height="216" rx="12" fill="url(#wave)"/>
+  <!-- Left bars -->
+  <rect x="200" y="176" width="22" height="160" rx="11" fill="url(#wave)" opacity="0.9"/>
+  <rect x="158" y="204" width="20" height="104" rx="10" fill="url(#wave)" opacity="0.7"/>
+  <rect x="118" y="224" width="18" height="64" rx="9" fill="url(#wave)" opacity="0.45"/>
+  <!-- Right bars -->
+  <rect x="290" y="176" width="22" height="160" rx="11" fill="url(#wave)" opacity="0.9"/>
+  <rect x="334" y="204" width="20" height="104" rx="10" fill="url(#wave)" opacity="0.7"/>
+  <rect x="376" y="224" width="18" height="64" rx="9" fill="url(#wave)" opacity="0.45"/>
+
+  <!-- Gold dot at top of center bar -->
+  <circle cx="256" cy="138" r="14" fill="#F59E0B"/>
+
+  <!-- Subtle inner glow circle -->
+  <circle cx="256" cy="256" r="80" fill="none" stroke="#F59E0B" stroke-width="1" opacity="0.15"/>
+</svg>

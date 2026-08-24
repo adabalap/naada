@@ -1,3 +1,4 @@
+// Plugin resolution: where Gradle looks for the plugins themselves.
 pluginManagement {
     repositories {
         google()
@@ -5,6 +6,12 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
+
+// Dependency resolution: the single, authoritative place where module
+// dependency repositories are declared. Because this block exists, no
+// build.gradle in the project may declare its own `repositories { }` for
+// dependencies — doing so is what caused the
+// "prefer settings repositories over project repositories" failure.
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {

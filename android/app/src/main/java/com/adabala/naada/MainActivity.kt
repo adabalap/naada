@@ -25,6 +25,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var progressBar: ProgressBar
     private var mediaService: NaadaMediaService? = null
     private var serverReady = false
+    private var recovering = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -69,8 +70,11 @@ class MainActivity : AppCompatActivity() {
         startForegroundService(mediaIntent)
         bindService(mediaIntent, serviceConnection, BIND_AUTO_CREATE)
 
-        // 3. Give Flask ~2 s to start, then load the UI
-        webView.postDelayed({ loadApp() }, 2000)
+        // 3. Wait for Flask to actually answer before loading the UI.
+        //    A fixed delay was wrong: on first launch Chaquopy unpacks the
+        //    whole Python stdlib and every pip package, which can take 15s+
+        //    on a mid-range phone. Two seconds guaranteed ERR_CONNECTION_REFUSED.
+        waitForServerThenLoad()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -94,6 +98,7 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 progressBar.visibility = View.GONE
+                recovering = false
                 // Inject the glue code that connects JS MediaSession calls
                 // to our native service
                 injectBridgeScript()
@@ -101,9 +106,12 @@ class MainActivity : AppCompatActivity() {
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?,
                                          error: WebResourceError?) {
-                if (request?.isForMainFrame == true) {
-                    // Flask not ready yet — retry in 1 s
-                    webView.postDelayed({ loadApp() }, 1000)
+                // Only react to the main document failing, and only once —
+                // re-entering the wait loop here would stack pollers.
+                if (request?.isForMainFrame == true && !recovering) {
+                    recovering = true
+                    Log.w(TAG, "Main frame failed to load; waiting for server again")
+                    waitForServerThenLoad()
                 }
             }
         }
@@ -118,7 +126,80 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadApp() {
         progressBar.visibility = View.VISIBLE
-        webView.loadUrl("http://localhost:5000/static/index.html")
+        webView.loadUrl("http://127.0.0.1:${FlaskServerService.PORT}/")
+    }
+
+    /**
+     * Poll the local server until it answers, then load the UI.
+     *
+     * Runs off the main thread. Gives up after START_TIMEOUT_MS and shows a
+     * real diagnostic page (including the Python traceback, if there was
+     * one) rather than Chrome's generic "Web page not available", which
+     * tells the user nothing actionable.
+     */
+    private fun waitForServerThenLoad() {
+        // Uses an explicit Runnable rather than a lambda passed to the Thread
+        // constructor: `return@Thread` inside a SAM-converted constructor
+        // argument is not reliably valid Kotlin, and it is the kind of thing
+        // that produces an opaque "Compilation error" with no useful message.
+        val task = Runnable { pollForServer() }
+        Thread(task, "naada-server-wait").apply { isDaemon = true }.start()
+    }
+
+    /** Blocks its thread until the server answers or the budget runs out. */
+    private fun pollForServer() {
+        val deadline = System.currentTimeMillis() + START_TIMEOUT_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (isServerUp()) {
+                runOnUiThread { loadApp() }
+                return
+            }
+            Log.d(TAG, "Waiting for local server… ${(deadline - System.currentTimeMillis()) / 1000}s left")
+            try {
+                Thread.sleep(POLL_MS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        }
+        runOnUiThread { showStartupError() }
+    }
+
+    private fun isServerUp(): Boolean = try {
+        (java.net.URL("http://127.0.0.1:${FlaskServerService.PORT}/api/health")
+            .openConnection() as java.net.HttpURLConnection).run {
+                connectTimeout = 800; readTimeout = 800; requestMethod = "GET"
+                val ok = responseCode in 200..499   // anything answering means it's alive
+                disconnect()
+                ok
+            }
+    } catch (_: Exception) { false }
+
+    private fun showStartupError() {
+        progressBar.visibility = View.GONE
+        val detail = FlaskServerService.lastError
+            ?: "The server did not start within ${START_TIMEOUT_MS / 1000} seconds."
+        val html = """
+            <html><head><meta name="viewport"
+              content="width=device-width,initial-scale=1"></head>
+            <body style="font-family:system-ui;padding:28px;background:#120C1A;color:#eee">
+              <h2 style="color:#c084fc;margin-bottom:4px">Naada couldn't start</h2>
+              <p style="color:#aaa;line-height:1.5">The bundled Python server
+                didn't come up. On the very first launch this can take a while
+                as the Python runtime unpacks — try reopening the app once.</p>
+              <pre style="background:#1e1630;padding:14px;border-radius:8px;
+                          white-space:pre-wrap;word-break:break-word;
+                          font-size:12px;color:#f9a8d4">$detail</pre>
+              <button onclick="location.reload()"
+                 style="background:#7c3aed;color:#fff;border:0;padding:12px 22px;
+                        border-radius:8px;font-size:15px;margin-top:8px">
+                Try again</button>
+              <p style="color:#666;font-size:12px;margin-top:22px">
+                If this keeps happening, capture the log with:<br>
+                <code style="color:#888">adb logcat -s NaadaFlask:* NaadaMain:* python.stderr:*</code></p>
+            </body></html>
+        """.trimIndent()
+        webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
     }
 
     /**
@@ -174,5 +255,8 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "NaadaMain"
+        // Generous: first launch unpacks the Python stdlib + pip packages.
+        private const val START_TIMEOUT_MS = 45_000L
+        private const val POLL_MS = 500L
     }
 }
