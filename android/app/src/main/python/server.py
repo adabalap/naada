@@ -29,6 +29,10 @@ import logging
 import os
 import sys
 
+# Bump this whenever the bundled backend changes, so the startup banner
+# identifies the build without needing to diff files on the device.
+BACKEND_BUILD = "v51-native-audio"
+
 log = logging.getLogger("naada.android")
 
 
@@ -40,6 +44,17 @@ def run_server(static_dir=None, port=5000):
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
         stream=sys.stdout,
     )
+
+    # Print a loud, unambiguous banner naming the backend that is actually
+    # running. Diagnosing a stale build once cost a full round trip: the
+    # device was still running an older hand-written server whose routes did
+    # not match the frontend, and nothing in the log said so. Now
+    #   adb logcat -s python.stdout | head -5
+    # answers "which backend is on this phone?" immediately.
+    log.info("=" * 62)
+    log.info("NAADA BACKEND  build=%s  (bundled naada_app.py, full route set)",
+             BACKEND_BUILD)
+    log.info("=" * 62)
 
     # Import here rather than at module scope so that any failure produces a
     # traceback at a point where FlaskServerService can catch and surface it,
@@ -102,6 +117,10 @@ def run_server(static_dir=None, port=5000):
     # Loopback only: this server exists for this device. Binding 0.0.0.0
     # would expose the whole API to anyone on the same Wi-Fi.
     srv = make_server("127.0.0.1", port, naada_app.app, threaded=True)
-    log.info("Naada backend ready on 127.0.0.1:%d with %d routes",
-             port, len(list(naada_app.app.url_map.iter_rules())))
+    rules = sorted(str(r) for r in naada_app.app.url_map.iter_rules())
+    log.info("Naada backend ready on 127.0.0.1:%d with %d routes", port, len(rules))
+    # Dump them all. If the frontend 404s, this line shows immediately
+    # whether the route is genuinely absent or the URL is just wrong.
+    for r in rules:
+        log.info("  route: %s", r)
     srv.serve_forever()

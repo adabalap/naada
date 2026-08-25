@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v48";
+const APP_VERSION = "v51";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -541,6 +541,22 @@ async function play(track, queue=S.queue, idx=-1) {
   setPlayIcons(true);
   vinylPlay(false);
 
+  // In the Android app, hand the queue to ExoPlayer in the foreground
+  // service and stop here — everything below drives the <audio> element,
+  // which is not the engine any more.
+  if (window.NATIVE_PLAYBACK) {
+    S.history = [track, ...S.history.filter(t => t.id !== track.id)].slice(0, 60);
+    save(); patchLists();
+    S.shelfTouch.recents = Date.now();
+    LS.set("nd_shelf_touch", S.shelfTouch);
+    if (S.page === "home") { renderHomeLibraryShelves(); applyShelfVisibility(); }
+    const ok = await window.nativePlay(S.queueIdx, 0);
+    $("player-loader").classList.remove("vis");
+    S.loading = false;
+    if (ok) { S.playing = true; S.wantPlaying = true; setPlayIcons(true); vinylPlay(true); }
+    return;
+  }
+
   // Add to history
   S.history = [track, ...S.history.filter(t => t.id !== track.id)].slice(0, 60);
   save();
@@ -781,6 +797,13 @@ function updateNpLike() {
 
 function togglePlay() {
   if (!S.track) return;
+  if (window.NATIVE_PLAYBACK) {
+    const want = !S.playing;
+    S.wantPlaying = want;
+    window.NaadaBridge.nativePlayPause(want);
+    setPlayIcons(want); vinylPlay(want); patchLists();
+    return;
+  }
   if (audio.paused) {
     S.wantPlaying = true;               // record intent BEFORE the async call
     audio.play().then(() => { S.playing = true; setPlayIcons(true); vinylPlay(true); patchLists(); });
@@ -803,6 +826,13 @@ function resetSkipErrors() { _skipErrors = 0; }
 
 function playNext(auto = false) {
   if (!S.queue.length) return;
+  if (window.NATIVE_PLAYBACK) {
+    // Native already holds the whole queue, so this is just a seek within
+    // it — no need to resolve or re-push anything.
+    window.NaadaBridge.nativeNext();
+    setTimeout(() => window.syncFromNative && window.syncFromNative(), 250);
+    return;
+  }
   if (_skipErrors >= MAX_SKIP_ERRORS) {
     _skipErrors = 0;
     S.playing = false;
@@ -830,6 +860,11 @@ function playNext(auto = false) {
 }
 
 function playPrev() {
+  if (window.NATIVE_PLAYBACK) {
+    window.NaadaBridge.nativePrev();
+    setTimeout(() => window.syncFromNative && window.syncFromNative(), 250);
+    return;
+  }
   if (audio.currentTime > 3) { audio.currentTime = 0; return; }
   if (!S.queue.length) return;
   const idx = S.shuffle
@@ -1461,8 +1496,26 @@ document.addEventListener("keydown", e => {
 });
 
 /* ── Service worker ──────────────────────────────────────────────────────── */
+/* Registered for the browser/PWA, deliberately NOT inside the Android app.
+
+   In the APK every asset is served by the bundled Flask server on localhost,
+   so the offline cache buys nothing — and it actively hurts: the SW would
+   keep serving a cached index.html and app.js after an app update, so a new
+   APK could still show the previous UI. Any existing registration is torn
+   down and its caches dropped, in case the app was used as a PWA first. */
+const NATIVE_APP = typeof window.NaadaBridge !== "undefined";
+
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
+  if (NATIVE_APP) {
+    navigator.serviceWorker.getRegistrations()
+      .then(rs => rs.forEach(r => r.unregister()))
+      .catch(() => {});
+    if (window.caches?.keys) {
+      caches.keys().then(ks => ks.forEach(k => caches.delete(k))).catch(() => {});
+    }
+  } else {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
 }
 
 
@@ -4654,21 +4707,48 @@ window.renderLibrary = function() {
     const k = getGeminiKey();
     if (!k) { toast("Save a key first"); return; }
     test.textContent = "…";
+
+    // Ask the API which models exist rather than probing a hardcoded name.
+    //
+    // An earlier version tested against "gemini-1.5-flash". Google retired
+    // that from v1beta, so a perfectly valid key reported
+    // "model not found" — the test was broken, not the key. ListModels
+    // validates the credential itself and cannot go stale as models come
+    // and go. It also tells us what this key can actually reach.
     try {
       const r = await fetch(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + k,
-        { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "Say OK" }] }] }) }
-      );
-      if (r.ok) {
-        if (status) { status.textContent = "✓ Key works!"; status.style.color = "var(--teal)"; }
-        toast("Key valid ✓");
-      } else {
+        "https://generativelanguage.googleapis.com/v1beta/models?key=" + encodeURIComponent(k));
+
+      if (!r.ok) {
         const d = await r.json().catch(() => ({}));
-        const msg = d.error?.message || r.statusText;
+        const msg = d.error?.message || r.statusText || `HTTP ${r.status}`;
         if (status) { status.textContent = "✗ " + msg; status.style.color = "var(--rose)"; }
-        toast("Key invalid: " + msg.slice(0, 60));
+        toast("Key rejected: " + msg.slice(0, 70));
+        return;
       }
+
+      const d = await r.json();
+      const usable = (d.models || [])
+        .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+        .map(m => (m.name || "").replace("models/", ""));
+
+      if (!usable.length) {
+        if (status) {
+          status.textContent = "✗ Key works but no usable models";
+          status.style.color = "var(--rose)";
+        }
+        toast("Key valid, but no generateContent models available");
+        return;
+      }
+
+      // Prefer a flash model — cheap and fast, and what the backend asks for.
+      const flash = usable.find(m => m.includes("flash")) || usable[0];
+      if (status) {
+        status.textContent = `✓ Key works — ${usable.length} models, using ${flash}`;
+        status.style.color = "var(--teal)";
+      }
+      toast("Key valid ✓");
+      window.ndlog && window.ndlog("gemini models: " + usable.slice(0, 8).join(", "));
     } catch (e) {
       if (status) { status.textContent = "✗ Network error"; status.style.color = "var(--rose)"; }
       toast("Network error testing key");
@@ -4679,4 +4759,143 @@ window.renderLibrary = function() {
   $("btn-home-settings")?.addEventListener("click", refresh);
   $("btn-lib-settings")?.addEventListener("click",  refresh);
   refresh();
+})();
+
+/* ═══════════════════════════════════════════════════════════════════════
+   NATIVE PLAYBACK BRIDGE  (Android app only)
+
+   In the APK, audio is played by ExoPlayer inside a foreground service
+   rather than by the <audio> element here. That is the only way to keep
+   music going with the screen off: a WebView belongs to the Activity, and
+   Android freezes a backgrounded Activity's media and JS timers, so the
+   `ended` handler that would start the next track simply never runs. That
+   was the real cause of "plays 2-3 songs then stops", and no amount of
+   buffering or wake-locking on this side could fix it.
+
+   The division of labour:
+     • JS  — owns the queue, shuffle, repeat, history, play counts, UI.
+              Resolves stream URLs (it already caches 20 ahead) and hands
+              the whole list to native.
+     • Native — plays it, advances by itself, draws the notification.
+
+   Because native receives the WHOLE list, it never has to ask JS for
+   anything mid-queue. This page can be frozen solid and the music keeps
+   going, which is exactly the property we were missing.
+
+   In a browser none of this exists and the original <audio> path runs
+   unchanged.
+═══════════════════════════════════════════════════════════════════════ */
+(function nativePlayback() {
+  if (!window.NaadaBridge || typeof window.NaadaBridge.setQueue !== "function") {
+    window.NATIVE_PLAYBACK = false;
+    return;                       // browser / PWA: nothing to do
+  }
+  window.NATIVE_PLAYBACK = true;
+  window.ndlog && window.ndlog("native playback engine active");
+
+  // Silence the web audio element so the two engines can never both sound.
+  try { audio.pause(); audio.src = ""; audio.muted = true; } catch {}
+
+  /* Build the payload: the current track plus everything after it whose
+     URL we already hold. Unresolved tracks are simply omitted — when the
+     app is next awake, fillBuffer() resolves more and we re-push. */
+  async function buildNativeQueue(startIdx) {
+    const out = [];
+    let nativeStart = 0;
+    for (let i = 0; i < S.queue.length; i++) {
+      const t = S.queue[i];
+      if (!t) continue;
+      let url = cachedUrl(t.id) || (S.armed?.id === t.id ? S.armed.src : null);
+      if (i === startIdx && !url) url = await _resolveUrl(t.id);   // must have this one
+      if (!url) continue;
+      if (i === startIdx) nativeStart = out.length;
+      out.push({
+        id:     t.id,
+        url,
+        title:  t.title  || "",
+        artist: t.artist || "",
+        album:  t.album  || "Naada",
+        art:    t.image  || ""
+      });
+    }
+    return { list: out, start: nativeStart };
+  }
+
+  /* Push the queue to native and start playing. */
+  window.nativePlay = async function (startIdx, positionMs = 0) {
+    const { list, start } = await buildNativeQueue(startIdx);
+    if (!list.length) { window.ndlog && window.ndlog("native: nothing resolved yet"); return false; }
+    window.ndlog && window.ndlog(`native: queue ${list.length}, start ${start}`);
+    window.NaadaBridge.setQueue(JSON.stringify(list), start, String(positionMs));
+    return true;
+  };
+
+  /* ── Callbacks from the service ─────────────────────────────────────
+     These are best-effort. If the WebView is frozen they never arrive,
+     and that is harmless: the UI simply re-syncs from nativePosition()
+     when the user next opens the app. */
+  window.__onNativeState = function (playing) {
+    S.playing = !!playing;
+    S.wantPlaying = !!playing;
+    setPlayIcons(!!playing);
+    vinylPlay(!!playing);
+    patchLists();
+  };
+
+  window.__onNativeTrack = function (nativeIdx) {
+    // Map native's index back onto our queue via the track id.
+    const t = S.queue[S.queueIdx];
+    window.ndlog && window.ndlog(`native track ${nativeIdx}`);
+    syncFromNative();
+  };
+
+  window.__onNativeEnded = function () {
+    S.playing = false;
+    S.wantPlaying = false;
+    setPlayIcons(false);
+    vinylPlay(false);
+    patchLists();
+  };
+
+  /* Pull authoritative state from the player. Native is the source of
+     truth for position and index; this page may have missed events while
+     it was frozen. */
+  function syncFromNative() {
+    try {
+      const raw = window.NaadaBridge.nativePosition();
+      if (!raw) return;
+      const p = JSON.parse(raw);
+      if (typeof p.idx === "number" && p.idx >= 0 && p.idx < S.queue.length) {
+        if (p.idx !== S.queueIdx) {
+          S.queueIdx = p.idx;
+          S.track = S.queue[p.idx];
+          updateMeta(S.track);
+          S.history = [S.track, ...S.history.filter(x => x.id !== S.track.id)].slice(0, 60);
+          save();
+        }
+      }
+      if (p.dur > 0) {
+        const bar = $("seek");
+        if (bar && !bar.matches(":active")) {
+          bar.max = Math.floor(p.dur / 1000);
+          bar.value = Math.floor(p.pos / 1000);
+        }
+        const cur = $("t-cur"), tot = $("t-tot");
+        if (cur) cur.textContent = fmtTime(p.pos / 1000);
+        if (tot) tot.textContent = fmtTime(p.dur / 1000);
+      }
+      S.playing = !!p.playing;
+      setPlayIcons(!!p.playing);
+    } catch {}
+  }
+  window.syncFromNative = syncFromNative;
+
+  // Drive the progress bar while the app is on screen. Stops when hidden,
+  // because there is nothing to update and it would only burn battery.
+  let timer = null;
+  function startTicker() { if (!timer) timer = setInterval(syncFromNative, 500); }
+  function stopTicker()  { if (timer) { clearInterval(timer); timer = null; } }
+  document.addEventListener("visibilitychange", () =>
+    document.hidden ? stopTicker() : (syncFromNative(), startTicker()));
+  startTicker();
 })();

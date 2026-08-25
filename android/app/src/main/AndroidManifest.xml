@@ -23,6 +23,10 @@
     <!-- Storage: for local music library if added later -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!-- Saving a backup to Downloads on Android 9 and below. From API 29
+         scoped storage covers the public Downloads directory without it. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
     <application
@@ -69,8 +73,12 @@
             android:foregroundServiceType="mediaPlayback">
 
             <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
+                <!-- media3 MediaSessionService discovery. Without this the
+                     system cannot find the session and the notification
+                     never appears. -->
+                <action android:name="androidx.media3.session.MediaSessionService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </service>
 

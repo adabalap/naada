@@ -99,11 +99,18 @@ dependencies {
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 
-    // Media session + notification.
-    // Deliberately NOT pulling in ExoPlayer: the actual audio is played by
-    // the <audio> element inside the WebView, so an ExoPlayer instance would
-    // be dead weight and its media-session extension clashes with
-    // androidx.media on the same MediaSessionCompat classes.
+    // Media3 / ExoPlayer — the audio engine.
+    //
+    // This replaces an earlier decision to leave ExoPlayer out on the
+    // grounds that the WebView's <audio> element did the playing. That was
+    // the root cause of "stops after 2-3 songs with the screen off": a
+    // WebView belongs to the Activity, and Android freezes a backgrounded
+    // Activity's media no matter how healthy a separate foreground service
+    // is. Audio has to be produced by the service itself to survive, which
+    // is exactly how Spotify and every other native player does it.
+    implementation 'androidx.media3:media3-exoplayer:1.2.1'
+    implementation 'androidx.media3:media3-session:1.2.1'
+    implementation 'androidx.media3:media3-common:1.2.1'
     implementation 'androidx.media:media:1.7.0'
 
     // WebView bridge extras

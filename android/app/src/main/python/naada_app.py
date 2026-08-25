@@ -11,13 +11,7 @@ Run:  python app.py           (foreground)
 
 import os, re, sys, base64, json, signal, time, logging, logging.handlers
 import requests
-# Pure-Python DES instead of `cryptography`. That package is a native
-# Rust/OpenSSL extension, and Chaquopy can only install native packages for
-# which it ships a prebuilt Android wheel — so depending on it makes the APK
-# build fragile and version-locked. pure_des is verified against the seven
-# standard FIPS known-answer vectors and byte-matches `cryptography` on
-# random input, so decryption behaviour is unchanged.
-import pure_des
+import pure_des  # pure-Python DES; no native wheel needed
 from flask import Flask, jsonify, request, send_from_directory
 try:
     from flask_cors import CORS
@@ -193,7 +187,6 @@ def decrypt_url(enc: str) -> str:
         key    = b"38346591"
         raw    = base64.b64decode(enc + "==")
         # DES-ECB via TripleDES(key*3) — equivalent to single DES, ECB mode
-        # Single DES, ECB, PKCS5 padding stripped by decrypt_ecb.
         dec = pure_des.decrypt_ecb(key, raw)
         url = dec.decode("utf-8", errors="ignore").strip()
         if url.startswith("http"):
