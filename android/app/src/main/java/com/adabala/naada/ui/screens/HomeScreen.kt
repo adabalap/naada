@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -82,8 +83,9 @@ fun HomeScreen() {
     val scope = rememberCoroutineScope()
     val settings by graph.settings.state.collectAsState()
     val lib by graph.library.library.collectAsState()
+    val profiles by graph.profiles.state.collectAsState()
     val lang = settings.homeLang
-    val home = rememberLoader(lang, settings.serverUrl, settings.token) { graph.api.home(lang) }
+    val home = rememberLoader(lang, settings.serverUrl, settings.token, profiles.active) { graph.api.home(lang) }
     val recent = remember(lib.history) { graph.library.recentSongs(16) }
 
     PullToRefreshBox(
@@ -96,9 +98,16 @@ fun HomeScreen() {
                 Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("నాద", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        Text(greeting(), style = MaterialTheme.typography.headlineMedium)
+                        Text(greeting() + (profiles.current?.let { ", ${it.name.substringBefore(' ')}" } ?: ""),
+                            style = MaterialTheme.typography.headlineMedium, maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                     }
                     IconButton(onClick = nav::settings) { Icon(Icons.Rounded.Settings, "Settings") }
+                    val me = profiles.current
+                    IconButton(onClick = nav::profiles) {
+                        if (me != null) Avatar(me.name, me.color, 34.dp)
+                        else Icon(Icons.Rounded.AccountCircle, "Profiles", Modifier.size(32.dp))
+                    }
                 }
             }
             item {
@@ -121,8 +130,8 @@ fun HomeScreen() {
             when (val s = home.state) {
                 is Load.Loading -> item { LoadingBox() }
                 is Load.Failed -> item {
-                    MessageBox("Couldn't load Home", s.message, action = if (s.auth) "Open Settings" else "Retry",
-                        onAction = { if (s.auth) nav.settings() else home.reload() })
+                    MessageBox("Couldn't load Home", s.message, action = if (s.auth) "Join or sign in" else "Retry",
+                        onAction = { if (s.auth) nav.profiles() else home.reload() })
                 }
                 is Load.Ready -> {
                     val h = s.value

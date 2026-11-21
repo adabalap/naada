@@ -18,7 +18,7 @@ sealed interface Load<out T> {
 class Loader<T>(val state: Load<T>, val refreshing: Boolean, val reload: () -> Unit)
 
 fun friendlyError(e: Throwable): Load.Failed = when {
-    e is ApiException && e.code == 401 -> Load.Failed("Your server needs an access token. Add it in Settings.", auth = true)
+    e is ApiException && e.code == 401 -> Load.Failed("Join with an invite code or sign in to use this server.", auth = true)
     e is ApiException -> Load.Failed(e.message ?: "Server error")
     else -> Load.Failed("Can't reach your Naada server. Check your connection or the server address in Settings.")
 }

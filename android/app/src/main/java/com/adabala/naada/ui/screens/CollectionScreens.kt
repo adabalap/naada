@@ -240,6 +240,9 @@ fun MoodScreen(prompt: String) {
             m.error == "ai_disabled" -> CollectionScaffold(prompt, "", "", emptyList(),
                 emptyTitle = "AI isn't set up", emptyBody = "Add a Gemini API key on the server (config.json) to build playlists from a vibe.",
                 emptyIcon = Icons.Rounded.AutoAwesome)
+            m.error == "daily_limit" -> CollectionScaffold(prompt, "", "", emptyList(),
+                emptyTitle = "That's today's AI playlists", emptyBody = "Your daily AI allowance is used up — try again tomorrow.",
+                emptyIcon = Icons.Rounded.AutoAwesome)
             m.songs.isEmpty() -> CollectionScaffold(prompt, "", "", emptyList(),
                 emptyTitle = "Couldn't build that one", emptyBody = "The AI is busy or found nothing. Try again in a minute, or describe it differently.",
                 emptyIcon = Icons.Rounded.AutoAwesome)

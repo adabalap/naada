@@ -58,6 +58,9 @@ import com.adabala.naada.ui.screens.PlaylistScreen
 import com.adabala.naada.ui.screens.SearchScreen
 import com.adabala.naada.ui.screens.SettingsScreen
 import com.adabala.naada.ui.screens.SharedPlaylistScreen
+import com.adabala.naada.ui.screens.ProfilesScreen
+import com.adabala.naada.ui.screens.AddProfileScreen
+import com.adabala.naada.ui.screens.AdminScreen
 import com.adabala.naada.ui.screens.TriviaScreen
 import com.adabala.naada.ui.screens.UserPlaylistScreen
 
@@ -85,6 +88,15 @@ fun NaadaRoot(
 
     LaunchedEffect(openPlayer) {
         if (openPlayer) { showPlayer = true; onPlayerOpened() }
+    }
+    // First run: ask who's listening, or send newcomers to join if the server needs it.
+    LaunchedEffect(Unit) {
+        val ps = graph.profiles.state.value
+        if (ps.askOnLaunch && ps.profiles.size >= 2) { nav.profiles(); return@LaunchedEffect }
+        if (ps.profiles.isEmpty() && graph.settings.state.value.token.isBlank()) {
+            val info = runCatching { graph.api.serverInfo() }.getOrNull()
+            if (info != null && info.tokenRequired && info.user == null) nav.addProfile()
+        }
     }
     LaunchedEffect(sharedId) {
         if (sharedId != null) { showPlayer = false; runCatching { nav.shared(sharedId) }; onSharedOpened() }
@@ -122,6 +134,9 @@ fun NaadaRoot(
                             composable("settings") { SettingsScreen() }
                             composable("trivia") { TriviaScreen() }
                             composable("shared/{id}") { SharedPlaylistScreen(it.arg("id")) }
+                            composable("profiles") { ProfilesScreen() }
+                            composable("addprofile") { AddProfileScreen() }
+                            composable("admin") { AdminScreen() }
                         }
                     }
 

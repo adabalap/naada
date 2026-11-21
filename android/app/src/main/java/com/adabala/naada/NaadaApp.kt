@@ -13,6 +13,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.adabala.naada.data.LibraryRepository
 import com.adabala.naada.data.NaadaApi
+import com.adabala.naada.data.ProfileStore
 import com.adabala.naada.data.SettingsStore
 import com.adabala.naada.playback.NaadaDownloadService
 import com.adabala.naada.playback.PlaybackGraph
@@ -21,13 +22,17 @@ import com.adabala.naada.playback.QueueStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /** Everything long-lived, created once per process. */
 class AppGraph(app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val settings = SettingsStore(app, scope)
-    val api = NaadaApi(settings)
-    val library = LibraryRepository(app, api, scope)
+    val profiles = ProfileStore(app)
+    val api = NaadaApi(settings, profiles)
+    val library = LibraryRepository(app, api, scope, profiles.state.value.active)
     val playback = PlaybackGraph(app, api)
     val queueStore = QueueStore(app)
     val player = PlayerController(app, scope, playback)
@@ -41,6 +46,10 @@ class NaadaApp : Application(), ImageLoaderFactory {
         super.onCreate()
         graph = AppGraph(this)
         createChannels()
+        // Each profile has its own library; switch when the active profile changes.
+        graph.scope.launch {
+            graph.profiles.state.map { it.active }.distinctUntilChanged().collect { graph.library.switchTo(it) }
+        }
         // Sync the library whenever the app comes to the foreground.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) = graph.library.scheduleSync()

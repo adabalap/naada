@@ -6,6 +6,8 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.serializer
@@ -22,7 +24,7 @@ import java.util.concurrent.TimeUnit
 class ApiException(val code: Int, message: String) : IOException(message)
 
 /** Thin client for the server's /api/v1 contract. */
-class NaadaApi(private val settings: SettingsStore) {
+class NaadaApi(private val settings: SettingsStore, private val profiles: ProfileStore) {
 
     val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -40,8 +42,11 @@ class NaadaApi(private val settings: SettingsStore) {
         return b.build()
     }
 
-    private fun request(url: HttpUrl, method: String = "GET", body: RequestBody? = null): Request {
-        val token = settings.state.value.token
+    /** The active profile's personal token, else the server access token (owner). */
+    private fun activeToken(): String = profiles.state.value.current?.token ?: settings.state.value.token
+
+    private fun request(url: HttpUrl, method: String = "GET", body: RequestBody? = null, tokenOverride: String? = null): Request {
+        val token = tokenOverride ?: activeToken()
         return Request.Builder().url(url)
             .header("Accept", "application/json")
             .header("User-Agent", "NaadaAndroid/2")
@@ -54,8 +59,13 @@ class NaadaApi(private val settings: SettingsStore) {
     fun <T> callBlocking(req: Request, ser: KSerializer<T>): T {
         http.newCall(req).execute().use { r ->
             val text = r.body?.string().orEmpty()
-            if (r.code == 401) throw ApiException(401, "Server needs a valid access token")
-            if (!r.isSuccessful) throw ApiException(r.code, "Server error ${r.code}")
+            if (!r.isSuccessful) {
+                // Server errors carry a machine-readable key: {"error": "name_taken"}
+                val key = runCatching {
+                    NaadaJson.parseToJsonElement(text).jsonObject["error"]?.jsonPrimitive?.content
+                }.getOrNull()
+                throw ApiException(r.code, key ?: if (r.code == 401) "sign_in_required" else "Server error ${r.code}")
+            }
             return NaadaJson.decodeFromString(ser, text)
         }
     }
@@ -63,9 +73,9 @@ class NaadaApi(private val settings: SettingsStore) {
     private suspend fun <T> get(path: String, ser: KSerializer<T>, q: Map<String, String> = emptyMap()): T =
         withContext(Dispatchers.IO) { callBlocking(request(url(path, q)), ser) }
 
-    private suspend fun <T> send(path: String, method: String, body: String, ser: KSerializer<T>): T =
+    private suspend fun <T> send(path: String, method: String, body: String, ser: KSerializer<T>, token: String? = null): T =
         withContext(Dispatchers.IO) {
-            callBlocking(request(url(path), method, body.toRequestBody(jsonType)), ser)
+            callBlocking(request(url(path), method, body.toRequestBody(jsonType), token), ser)
         }
 
     private inline fun <reified T> ser(): KSerializer<T> = serializer()
@@ -151,6 +161,45 @@ class NaadaApi(private val settings: SettingsStore) {
     }
 
     suspend fun sharedPlaylist(id: String): SharedPlaylist = get("share/$id", ser())
+
+    // ── Accounts ───────────────────────────────────────────────────────────
+    private val device get() = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
+
+    suspend fun serverInfo(): InfoWithUser = get("info", ser())
+
+    suspend fun join(code: String, name: String, pin: String): AuthResponse {
+        val body = buildJsonObject { put("code", code); put("name", name); put("pin", pin); put("device", device) }
+        return send("auth/join", "POST", body.toString(), ser(), token = "")
+    }
+
+    suspend fun login(name: String, pin: String): AuthResponse {
+        val body = buildJsonObject { put("name", name); put("pin", pin); put("device", device) }
+        return send("auth/login", "POST", body.toString(), ser(), token = "")
+    }
+
+    suspend fun logout(token: String) {
+        runCatching { send("auth/logout", "POST", "{}", JsonObject.serializer(), token = token) }
+    }
+
+    suspend fun me(): UserInfo = get("me", ser())
+
+    /** Uses the server access token — how the owner claims their account on a fresh phone. */
+    suspend fun updateMe(name: String? = null, pin: String? = null, currentPin: String? = null, color: String? = null, asOwner: Boolean = false): UserInfo {
+        val body = buildJsonObject {
+            name?.let { put("name", it) }; pin?.let { put("pin", it) }
+            currentPin?.let { put("current_pin", it) }; color?.let { put("color", it) }
+        }
+        return send("me", "PUT", body.toString(), ser(), token = if (asOwner) settings.state.value.token else null)
+    }
+
+    suspend fun createInvite(userId: String? = null): Invite {
+        val body = buildJsonObject { userId?.let { put("user_id", it) } }
+        return send("admin/invites", "POST", body.toString(), ser())
+    }
+
+    suspend fun adminOverview(): AdminOverview = get("admin/users", ser())
+    suspend fun removeUser(id: String) { send("admin/users/$id", "DELETE", "{}", JsonObject.serializer()) }
+    suspend fun cancelInvite(code: String) { send("admin/invites/$code", "DELETE", "{}", JsonObject.serializer()) }
 
     @Serializable private data class ShareBody(val name: String, val songs: List<Song>)
     @Serializable private data class TriviaBody(val songs: List<Song>)

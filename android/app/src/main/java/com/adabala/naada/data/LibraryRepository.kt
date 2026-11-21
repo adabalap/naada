@@ -29,8 +29,14 @@ class LibraryRepository(
     context: Context,
     private val api: NaadaApi,
     private val scope: CoroutineScope,
+    initialProfile: String?,
 ) {
-    private val file = File(context.filesDir, "library.json")
+    private val dir = context.filesDir
+    private var profileKey: String? = initialProfile
+    private var file = fileFor(initialProfile)
+
+    /** No profile = the owner/legacy library this phone had before profiles. */
+    private fun fileFor(profile: String?) = File(dir, if (profile == null) "library.json" else "library-$profile.json")
     private val mutex = Mutex()
     private var syncJob: Job? = null
 
@@ -47,7 +53,7 @@ class LibraryRepository(
 
     private fun persist(l: LocalLibrary) {
         runCatching {
-            val tmp = File(file.parentFile, "library.json.tmp")
+            val tmp = File(file.parentFile, file.name + ".tmp")
             tmp.writeText(NaadaJson.encodeToString(LocalLibrary.serializer(), l))
             tmp.renameTo(file)
         }.onFailure { Log.w(TAG, "persist failed", it) }
@@ -61,6 +67,18 @@ class LibraryRepository(
         }
         _data.value = _local.value.data
         scheduleSync(800)
+    }
+
+    /** Show another person's library. Their cached copy appears instantly, then syncs. */
+    fun switchTo(profile: String?) {
+        if (profile == profileKey) return
+        syncJob?.cancel()
+        profileKey = profile
+        file = fileFor(profile)
+        _local.value = load()
+        _data.value = _local.value.data
+        _sync.value = SyncState.Idle
+        scheduleSync()
     }
 
     // ── Queries ────────────────────────────────────────────────────────────

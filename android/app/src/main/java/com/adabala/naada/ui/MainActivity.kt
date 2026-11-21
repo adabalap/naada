@@ -51,6 +51,10 @@ class Nav(private val nc: NavHostController) {
     fun settings() = go("settings")
     fun trivia() = go("trivia")
     fun shared(id: String) = go("shared/${Uri.encode(id)}")
+    fun profiles() = go("profiles")
+    fun addProfile() = go("addprofile")
+    fun admin() = go("admin")
+    fun home() { nc.navigate("home") { popUpTo("home") { inclusive = false }; launchSingleTop = true } }
     fun back() { nc.popBackStack() }
 }
 

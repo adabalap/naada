@@ -392,6 +392,7 @@ private fun StoryPanel(song: Song) {
                         "" -> s.value.text
                         "ai_disabled" -> "AI stories need a Gemini key on your server."
                         "cooldown" -> "The AI is resting for a minute — try again shortly."
+                        "daily_limit" -> "You've enjoyed today's AI stories — more tomorrow!"
                         else -> "No story for this one yet."
                     }
                     Text(msg, color = Color.White, fontSize = 18.sp, lineHeight = 28.sp)

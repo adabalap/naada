@@ -114,6 +114,8 @@ fun SettingsScreen() {
             Text("Settings", style = MaterialTheme.typography.headlineSmall)
         }
 
+        Section("Account") { AccountSection() }
+
         Section("Appearance") {
             Text("Theme", style = MaterialTheme.typography.bodyLarge)
             Spacer(Modifier.height(8.dp))
@@ -137,7 +139,7 @@ fun SettingsScreen() {
 
         Section("Your server") {
             Text(
-                "Naada streams through your own server. The access token is the NAADA_TOKEN set on the server (leave blank if none).",
+                "Naada streams through your own server. Family & friends don't need the access token — they join with an invite. Only the owner enters NAADA_TOKEN here (blank if the server has none).",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(12.dp))
@@ -290,6 +292,7 @@ fun TriviaScreen() {
                     MessageBox(
                         "No trivia right now",
                         if (s.value.error == "ai_disabled") "Add a Gemini key on your server to unlock trivia."
+                        else if (s.value.error == "daily_limit") "You've used today's AI allowance — more tomorrow!"
                         else "Play a few more songs, or try again in a minute.",
                         icon = Icons.Rounded.Lightbulb, action = "Try again", onAction = l.reload
                     )
