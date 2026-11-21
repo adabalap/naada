@@ -9,7 +9,7 @@ Run:  python app.py           (foreground)
       python app.py --status  (check if running)
 """
 
-import os, re, sys, base64, json, signal, time, logging, logging.handlers
+import os, re, sys, base64, json, hmac, signal, time, logging, logging.handlers
 import requests
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher
@@ -118,10 +118,19 @@ def _require_token():
     if p.startswith(_OPEN_PATHS):
         return None                       # icons/manifest stay public so the
                                           # install prompt can still work
-    if request.cookies.get("naada_k") == NAADA_TOKEN:
+    if request.method == "OPTIONS":
+        return None
+    # Native app: token in a header. PWA: token in a cookie (set via ?k=).
+    hdr = request.headers.get("X-Naada-Token", "")
+    auth = request.headers.get("Authorization", "")
+    if not hdr and auth.lower().startswith("bearer "):
+        hdr = auth[7:]
+    if hdr and hmac.compare_digest(hdr.strip(), NAADA_TOKEN):
+        return None
+    if hmac.compare_digest(request.cookies.get("naada_k", ""), NAADA_TOKEN):
         return None
     supplied = request.args.get("k", "")
-    if supplied and supplied == NAADA_TOKEN:
+    if supplied and hmac.compare_digest(supplied, NAADA_TOKEN):
         from flask import make_response, redirect
         r = make_response(redirect(request.path or "/"))
         r.set_cookie("naada_k", NAADA_TOKEN, max_age=365 * 24 * 3600,
@@ -617,12 +626,11 @@ def home_shelves(lang):
     return jsonify(result)
 
 # ── Song detail (with stream URL) ──────────────────────────────────────────
-@app.route("/api/song/<song_id>")
-def song_detail(song_id):
-    log.info(f"Song detail: {song_id}")
+def _fetch_song(song_id):
+    """Fetch + normalise one song. Returns (song_dict | None, error | None)."""
     d = saavn({"__call":"song.getDetails","pids":song_id})
     if "_error" in d:
-        return jsonify({"error":d["_error"]}), 500
+        return None, d["_error"]
 
     # Locate the song object that ACTUALLY matches the requested id.
     # JioSaavn responses vary: sometimes {id: {...}}, sometimes {"songs":[...]},
@@ -657,12 +665,28 @@ def song_detail(song_id):
 
     if not raw:
         log.error(f"song_detail: no matching object for id={song_id} (keys={list(d.keys())[:5]})")
-        return jsonify({"error":"not found"}), 404
+        return None, "not found"
 
     if raw.get("id") != song_id:
         log.warning(f"song_detail: id mismatch — requested {song_id}, got {raw.get('id')} ({raw.get('title')!r})")
 
-    result = norm(raw)
+    return norm(raw), None
+
+
+def _resolve_song(song_id):
+    """Used by /api/v1/stream: the song dict, or None."""
+    song, _err = _fetch_song(song_id)
+    return song
+
+
+@app.route("/api/song/<song_id>")
+def song_detail(song_id):
+    log.info(f"Song detail: {song_id}")
+    result, err = _fetch_song(song_id)
+    if err == "not found":
+        return jsonify({"error":"not found"}), 404
+    if err:
+        return jsonify({"error":err}), 500
     if not result.get("url"):
         log.error(f"No stream URL for song {song_id} — all strategies exhausted")
         return jsonify({"error":"no_stream_url","song":result}), 200
@@ -1115,6 +1139,11 @@ def debug_decrypt():
     return jsonify({"input":enc[:60],"result":decrypt_url(enc)})
 
 _start_time = time.time()
+
+# ── API v1 (native app contract) — must come after every /api/* route ──────
+from api_v1 import register_v1
+register_v1(app, BASE_DIR, _resolve_song,
+            lambda: bool(CONFIG.get("gemini_api_key")))
 
 # ── Request logging middleware ─────────────────────────────────────────────
 @app.before_request

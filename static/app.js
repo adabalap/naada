@@ -2192,6 +2192,29 @@ if (restoreBtn && restoreInput) {
   });
 }
 
+// Copy this device's library to the server so the native Android app sees
+// it. Merge-only: nothing on the server is deleted.
+const syncServerBtn = $("sync-server-btn");
+if (syncServerBtn) syncServerBtn.addEventListener("click", async () => {
+  const now = Date.now() / 1000;
+  const body = {
+    likes: S.liked,
+    playlists: S.playlists.map(p => ({ id: p.id, name: p.name, songs: p.songs || [] })),
+    history: S.history.map((t, i) => ({ song: t, played_at: now - i * 60 })),
+  };
+  try {
+    const r = await fetch("/api/v1/library/import", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      credentials: "same-origin", body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.status);
+    toast(`Copied ${j.likes} liked · ${j.playlists} playlists · ${j.history} plays`);
+  } catch (e) {
+    toast("Couldn't reach the server — try again");
+  }
+});
+
 /* ── In-app updater ──────────────────────────────────────────────────────
    Tells the service worker to fetch the latest files and reload — replaces
    the old "clear your cache" ritual. Never touches localStorage, so user
