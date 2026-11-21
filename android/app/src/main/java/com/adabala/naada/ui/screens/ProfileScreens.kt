@@ -211,6 +211,7 @@ private fun OwnerSetupDialog(onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
+    var token by remember { mutableStateOf(graph.settings.state.value.token) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
@@ -218,9 +219,12 @@ private fun OwnerSetupDialog(onDone: () -> Unit) {
         title = { Text("Owner profile") },
         text = {
             Column {
-                Text("Your existing library becomes yours. Uses the server access token from Settings (leave it blank if your server has none).",
+                Text("Your existing library becomes yours. Proves you're the owner with the server's NAADA_TOKEN (leave blank if your server has none).",
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(12.dp))
+                OutlinedTextField(token, { token = it.trim() }, label = { Text("Server access token") }, singleLine = true,
+                    visualTransformation = PasswordVisualTransformation())
+                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(name, { name = it }, label = { Text("Your name") }, singleLine = true)
                 Spacer(Modifier.height(8.dp))
                 PinField(pin, { pin = it }, "Choose a PIN (4–8 digits)")
@@ -231,6 +235,7 @@ private fun OwnerSetupDialog(onDone: () -> Unit) {
             TextButton(enabled = !busy && name.isNotBlank() && pin.length >= 4, onClick = {
                 busy = true; error = null
                 scope.launch {
+                    graph.settings.setServer(graph.settings.state.value.serverUrl, token)
                     runCatching {
                         val me = graph.api.updateMe(name = name.trim(), asOwner = true)
                         if (!me.isAdmin) throw IllegalStateException("not_owner")
@@ -242,8 +247,13 @@ private fun OwnerSetupDialog(onDone: () -> Unit) {
                         toast(context, "Welcome, ${auth.user.name}")
                         onDone()
                     }.onFailure { e ->
-                        error = if (e is IllegalStateException) "This phone isn't connected as the owner. Check the access token in Settings."
-                        else friendlyAuthError(e)
+                        error = when {
+                            e is IllegalStateException -> "This phone isn't connected as the owner."
+                            (e as? com.adabala.naada.data.ApiException)?.code == 401 ->
+                                if (token.isBlank()) "Your server has a NAADA_TOKEN — paste it above. On the server: sudo systemctl cat naada"
+                                else "That token doesn't match the server's NAADA_TOKEN."
+                            else -> friendlyAuthError(e)
+                        }
                     }
                     busy = false
                 }
