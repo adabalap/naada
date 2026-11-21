@@ -1,6 +1,18 @@
 package com.adabala.naada.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material3.Switch
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import com.adabala.naada.ui.theme.ThemeChoice
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -74,11 +86,53 @@ fun SettingsScreen() {
     var cacheTick by remember { mutableIntStateOf(0) }
     val streamMb = remember(cacheTick) { graph.playback.streamCacheBytes() / (1024 * 1024) }
     val dlMb = remember(cacheTick) { graph.playback.downloadBytes() / (1024 * 1024) }
+    var confirmClear by remember { mutableStateOf(false) }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val ok = runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(graph.library.backupJson().toByteArray()) }
+        }.isSuccess
+        toast(context, if (ok) "Library backed up" else "Couldn't write the backup")
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val text = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() } }.getOrNull()
+            }
+            if (text == null) { toast(context, "Couldn't read that file"); return@launch }
+            graph.library.restoreBackup(text)
+                .onSuccess { toast(context, it) }
+                .onFailure { toast(context, "Restore needs your server online and a Naada backup file") }
+        }
+    }
 
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState())) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = nav::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back") }
             Text("Settings", style = MaterialTheme.typography.headlineSmall)
+        }
+
+        Section("Appearance") {
+            Text("Theme", style = MaterialTheme.typography.bodyLarge)
+            Spacer(Modifier.height(8.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(ThemeChoice.entries) { t ->
+                    ThemeCard(t, selected = settings.theme == t.id) { scope.launch { graph.settings.setTheme(t.id) } }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(ThemeChoice.of(settings.theme).blurb, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Colour follows the music", style = MaterialTheme.typography.bodyLarge)
+                    Text("Tint buttons and highlights with the playing song's album art",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(checked = settings.followArt, onCheckedChange = { on -> scope.launch { graph.settings.setFollowArt(on) } })
+            }
         }
 
         Section("Your server") {
@@ -124,10 +178,29 @@ fun SettingsScreen() {
                     Text("Sync library")
                 }
             }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Save & test stores these details and checks the server answers. Sync library sends changes made on this phone (even offline) and pulls the latest from the server — it also runs every time you open Naada.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             status?.let {
                 Spacer(Modifier.height(8.dp))
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
             }
+        }
+
+        Section("Backup & history") {
+            Text(
+                "Your library already lives on your server, so updates and new phones keep it. A backup file is an extra copy you control — keep it in Drive or send it to yourself.",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { exportLauncher.launch("naada-library-${java.time.LocalDate.now()}.json") }) { Text("Back up to file") }
+                OutlinedButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }) { Text("Restore from file") }
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = { confirmClear = true }) { Text("Clear listening history") }
         }
 
         Section("Storage") {
@@ -149,6 +222,37 @@ fun SettingsScreen() {
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.height(32.dp))
+    }
+
+    if (confirmClear) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { confirmClear = false },
+        title = { Text("Clear listening history?") },
+        text = { Text("Removes recently played from this phone and your server. Likes and playlists stay.") },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = { confirmClear = false; graph.library.clearHistory(); toast(context, "History cleared") }) { Text("Clear") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun ThemeCard(t: ThemeChoice, selected: Boolean, onClick: () -> Unit) {
+    val border = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+    Column(
+        Modifier.width(96.dp).clip(RoundedCornerShape(16.dp))
+            .border(if (selected) 2.dp else 1.dp, border, RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick).padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            Modifier.fillMaxWidth().height(64.dp).clip(RoundedCornerShape(12.dp)).background(t.swatch[0])
+        ) {
+            Box(Modifier.align(Alignment.BottomStart).padding(8.dp).size(width = 44.dp, height = 10.dp)
+                .clip(RoundedCornerShape(5.dp)).background(Brush.horizontalGradient(t.swatch.drop(1))))
+            Box(Modifier.align(Alignment.TopEnd).padding(8.dp).size(18.dp).clip(CircleShape).background(t.swatch.last()))
+            if (selected) Icon(Icons.Rounded.CheckCircle, null, tint = Color.White,
+                modifier = Modifier.align(Alignment.Center).size(22.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(t.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
     }
 }
 

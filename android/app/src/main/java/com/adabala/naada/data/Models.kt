@@ -131,6 +131,15 @@ data class LibraryData(
     val unchanged: Boolean = false,
 )
 
+@Serializable
+data class SharedPlaylist(
+    val id: String = "",
+    val name: String = "",
+    val songs: List<Song> = emptyList(),
+)
+
+@Serializable data class ShareResponse(val id: String = "", val url: String = "")
+
 @Serializable data class RevResponse(val rev: Long = 0, val id: String = "")
 
 /** A change made while offline (or not yet confirmed by the server). */

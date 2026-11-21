@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -28,6 +29,8 @@ import androidx.compose.material.icons.rounded.DownloadForOffline
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -57,6 +60,7 @@ import com.adabala.naada.ui.LocalGraph
 import com.adabala.naada.ui.LocalNav
 import com.adabala.naada.ui.components.Artwork
 import com.adabala.naada.ui.theme.Brand
+import com.adabala.naada.ui.theme.LocalNaadaStyle
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -68,6 +72,8 @@ fun LibraryScreen() {
     val lib by graph.library.library.collectAsState()
     val sync by graph.library.syncState.collectAsState()
     val downloads by graph.playback.downloads.collectAsState()
+    val settings by graph.settings.state.collectAsState()
+    val grid = settings.libraryGrid
     var creating by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
 
@@ -95,7 +101,7 @@ fun LibraryScreen() {
             item {
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     QuickTile("Liked", "${lib.likes.size} songs", Icons.Rounded.Favorite,
-                        Brush.linearGradient(listOf(Brand.Rose, Brand.Purple)), Modifier.weight(1f), nav::liked)
+                        Brush.linearGradient(LocalNaadaStyle.current.hero.take(2).reversed()), Modifier.weight(1f), nav::liked)
                     QuickTile("Downloads", "${downloads.values.count { it.done }} offline", Icons.Rounded.DownloadForOffline,
                         Brush.linearGradient(listOf(Brand.Teal, Brand.Purple)), Modifier.weight(1f), nav::downloads)
                 }
@@ -112,7 +118,13 @@ fun LibraryScreen() {
                 }
             }
             item {
-                Text("Playlists", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 4.dp))
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Playlists", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { scope.launch { graph.settings.setLibraryGrid(!grid) } }) {
+                        Icon(if (grid) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
+                            if (grid) "Show as list" else "Show as tiles")
+                    }
+                }
             }
             if (lib.playlists.isEmpty()) item {
                 Text(
@@ -121,7 +133,23 @@ fun LibraryScreen() {
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
                 )
             }
-            items(lib.playlists) { p ->
+            if (grid) items(lib.playlists.chunked(2)) { pair ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    pair.forEach { p ->
+                        Column(
+                            Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).clickable { nav.userPlaylist(p.id) }.padding(6.dp)
+                        ) {
+                            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                                PlaylistMosaic(p.songs.take(4).map { it.image }, size = maxWidth)
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Text(p.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("${p.songs.size} songs", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
+            } else items(lib.playlists) { p ->
                 Row(
                     Modifier.fillMaxWidth().clickable { nav.userPlaylist(p.id) }.padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -160,7 +188,7 @@ private fun QuickTile(title: String, subtitle: String, icon: ImageVector, brush:
 
 @Composable
 fun PlaylistMosaic(images: List<String>, size: androidx.compose.ui.unit.Dp = 56.dp) {
-    Box(Modifier.size(size).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
+    Box(Modifier.size(size).clip(RoundedCornerShape(LocalNaadaStyle.current.corner * 0.7f)).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
         when {
             images.isEmpty() -> Icon(Icons.AutoMirrored.Rounded.QueueMusic, null, Modifier.align(Alignment.Center), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             images.size < 4 -> Artwork(images[0], Modifier.fillMaxSize(), shape = RoundedCornerShape(0.dp))

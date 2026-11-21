@@ -120,6 +120,21 @@ class LibraryRepository(
         }
     }
 
+    fun clearHistory() {
+        mutate(PendingOp("history_clear")) { d -> d.copy(history = emptyList()) }
+    }
+
+    /** Export: everything in the library, as written to a backup file. */
+    fun backupJson(): String = NaadaJson.encodeToString(LibraryData.serializer(), library.value.copy(unchanged = false))
+
+    /** Restore a backup file: merge into the server, then pull the result. */
+    suspend fun restoreBackup(json: String): Result<String> = runCatching {
+        val data = NaadaJson.decodeFromString(LibraryData.serializer(), json)
+        api.importLibrary(data)
+        sync()
+        "Restored ${data.likes.size} liked songs and ${data.playlists.size} playlists"
+    }
+
     fun recentSongs(limit: Int = 20): List<Song> =
         library.value.history.map { it.song }.distinctBy { it.id }.take(limit)
 
@@ -169,6 +184,7 @@ class LibraryRepository(
                 "unlike" -> api.unlike(op.id)
                 "pl_upsert" -> api.upsertPlaylist(op.id, op.name ?: "Playlist", op.songs ?: emptyList())
                 "pl_delete" -> api.deletePlaylist(op.id)
+                "history_clear" -> api.clearHistory()
                 "history" -> {
                     // Batch consecutive history ops into one upload.
                     val batch = _local.value.pending.takeWhile { it.kind == "history" }

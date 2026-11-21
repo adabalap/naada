@@ -29,6 +29,8 @@ import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalIconButton
@@ -62,6 +64,7 @@ import com.adabala.naada.ui.components.Load
 import com.adabala.naada.ui.components.LoadingBox
 import com.adabala.naada.ui.components.MessageBox
 import com.adabala.naada.ui.components.SongActionsSheet
+import com.adabala.naada.ui.components.ShareSheet
 import com.adabala.naada.ui.components.SongRow
 import com.adabala.naada.ui.components.rememberArtColors
 import com.adabala.naada.ui.components.rememberLoader
@@ -84,6 +87,7 @@ fun CollectionScaffold(
     emptyBody: String = "",
     emptyIcon: ImageVector = Icons.Rounded.LibraryMusic,
     headerActions: @Composable () -> Unit = {},
+    topActions: @Composable () -> Unit = {},
     footer: @Composable () -> Unit = {},
 ) {
     val graph = LocalGraph.current
@@ -94,6 +98,7 @@ fun CollectionScaffold(
     val downloads by graph.playback.downloads.collectAsState()
     val art = rememberArtColors(image.ifEmpty { songs.firstOrNull()?.image })
     var actionFor by remember { mutableStateOf<Song?>(null) }
+    var sharing by remember { mutableStateOf(false) }
     val allDownloaded = songs.isNotEmpty() && songs.all { downloads[it.id]?.done == true }
     val top = (art?.muted ?: MaterialTheme.colorScheme.primaryContainer).copy(alpha = .55f)
 
@@ -104,8 +109,11 @@ fun CollectionScaffold(
                     .background(Brush.verticalGradient(listOf(top, Color.Transparent)))
                     .statusBarsPadding()
             ) {
-                IconButton(onClick = nav::back, modifier = Modifier.padding(4.dp)) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back")
+                Row(Modifier.fillMaxWidth().padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = nav::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back") }
+                    Spacer(Modifier.weight(1f))
+                    topActions()
+                    if (songs.isNotEmpty()) IconButton(onClick = { sharing = true }) { Icon(Icons.Rounded.Share, "Share") }
                 }
                 Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     if (mosaic) PlaylistMosaic(songs.take(4).map { it.image }, size = 200.dp)
@@ -158,6 +166,7 @@ fun CollectionScaffold(
     }
 
     actionFor?.let { s -> SongActionsSheet(s, onDismiss = { actionFor = null }, fromUserPlaylist = userPlaylistId) }
+    if (sharing) ShareSheet(title, songs, onDismiss = { sharing = false })
 }
 
 @Composable
@@ -258,11 +267,39 @@ fun LikedScreen() {
 @Composable
 fun HistoryScreen() {
     val graph = LocalGraph.current
+    val context = LocalContext.current
     val lib by graph.library.library.collectAsState()
     val songs = remember(lib.history) { lib.history.map { it.song }.distinctBy { it.id } }
+    var confirm by remember { mutableStateOf(false) }
     CollectionScaffold("Recently played", "${songs.size} songs", "", songs, mosaic = true,
         emptyTitle = "Nothing played yet", emptyBody = "Songs you play show up here, on every device.",
-        emptyIcon = Icons.Rounded.History)
+        emptyIcon = Icons.Rounded.History,
+        topActions = {
+            if (songs.isNotEmpty()) IconButton(onClick = { confirm = true }) { Icon(Icons.Rounded.DeleteSweep, "Clear history") }
+        })
+    if (confirm) AlertDialog(
+        onDismissRequest = { confirm = false },
+        title = { Text("Clear listening history?") },
+        text = { Text("Removes recently played from this phone and your server. Likes and playlists stay.") },
+        confirmButton = { TextButton(onClick = { confirm = false; graph.library.clearHistory(); toast(context, "History cleared") }) { Text("Clear") } },
+        dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
+    )
+}
+
+@Composable
+fun SharedPlaylistScreen(id: String) {
+    val graph = LocalGraph.current
+    val context = LocalContext.current
+    val l = rememberLoader(id) { graph.api.sharedPlaylist(id) }
+    Loaded(l.state, l.reload) { p ->
+        CollectionScaffold(p.name, "Shared with you · ${p.songs.size} songs", "", p.songs, mosaic = true,
+            headerActions = {
+                FilledTonalIconButton(onClick = {
+                    graph.library.createPlaylist(p.name, p.songs)
+                    toast(context, "Saved to your library")
+                }) { Icon(Icons.Rounded.FavoriteBorder, "Save to library") }
+            })
+    }
 }
 
 @Composable

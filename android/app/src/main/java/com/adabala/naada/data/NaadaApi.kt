@@ -136,6 +136,23 @@ class NaadaApi(private val settings: SettingsStore) {
         return send("library/history", "POST", body, ser())
     }
 
+    suspend fun clearHistory(): RevResponse = send("library/history", "DELETE", "{}", ser())
+
+    /** Merge a backup file into the server library (nothing is deleted). */
+    suspend fun importLibrary(data: LibraryData): RevResponse {
+        val body = NaadaJson.encodeToString(LibraryData.serializer(), data)
+        return send("library/import", "POST", body, ser())
+    }
+
+    // ── Sharing ────────────────────────────────────────────────────────────
+    suspend fun share(name: String, songs: List<Song>): ShareResponse {
+        val body = NaadaJson.encodeToString(ShareBody.serializer(), ShareBody(name, songs.map { it.forStorage() }))
+        return send("share", "POST", body, ser())
+    }
+
+    suspend fun sharedPlaylist(id: String): SharedPlaylist = get("share/$id", ser())
+
+    @Serializable private data class ShareBody(val name: String, val songs: List<Song>)
     @Serializable private data class TriviaBody(val songs: List<Song>)
     @Serializable private data class PlaylistBody(val id: String, val name: String, val songs: List<Song>)
     @Serializable private data class HistoryBody(val items: List<HistoryItem>)

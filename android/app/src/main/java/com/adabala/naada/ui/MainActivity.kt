@@ -14,6 +14,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import com.adabala.naada.ui.theme.LocalNaadaStyle
+import com.adabala.naada.ui.theme.ThemeChoice
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,12 +50,14 @@ class Nav(private val nc: NavHostController) {
     fun downloads() = go("downloads")
     fun settings() = go("settings")
     fun trivia() = go("trivia")
+    fun shared(id: String) = go("shared/${Uri.encode(id)}")
     fun back() { nc.popBackStack() }
 }
 
 class MainActivity : ComponentActivity() {
 
     private val openPlayer = mutableStateOf(false)
+    private val sharedId = mutableStateOf<String?>(null)
 
     private val askNotifications =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -79,9 +86,21 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun ThemedRoot(graph: AppGraph) {
         val ui by graph.player.ui.collectAsState()
-        val art = rememberArtColors(ui.song?.image)
-        NaadaTheme(accent = art?.vibrant) {
-            NaadaRoot(openPlayer = openPlayer.value, onPlayerOpened = { openPlayer.value = false })
+        val settings by graph.settings.state.collectAsState()
+        val art = rememberArtColors(if (settings.followArt) ui.song?.image else null)
+        val choice = ThemeChoice.of(settings.theme)
+        NaadaTheme(choice = choice, accent = if (settings.followArt) art?.vibrant else null) {
+            val dark = LocalNaadaStyle.current.dark
+            val view = LocalView.current
+            SideEffect {
+                val c = WindowCompat.getInsetsController(window, view)
+                c.isAppearanceLightStatusBars = !dark
+                c.isAppearanceLightNavigationBars = !dark
+            }
+            NaadaRoot(
+                openPlayer = openPlayer.value, onPlayerOpened = { openPlayer.value = false },
+                sharedId = sharedId.value, onSharedOpened = { sharedId.value = null },
+            )
         }
     }
 
@@ -92,6 +111,15 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_OPEN_PLAYER, false) == true) openPlayer.value = true
+        // Shared playlist links: naada://share/<id> or https://<server>/share/<id>
+        val data = intent?.data ?: return
+        val segs = data.pathSegments
+        val id = when {
+            data.scheme == "naada" && data.host == "share" -> segs.firstOrNull()
+            segs.size >= 2 && segs[0] == "share" -> segs[1]
+            else -> null
+        }
+        if (!id.isNullOrBlank()) sharedId.value = id
     }
 
     companion object {

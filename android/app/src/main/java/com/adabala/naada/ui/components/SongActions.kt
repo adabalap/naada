@@ -69,6 +69,7 @@ fun SongActionsSheet(
     val liked = lib.likes.any { it.id == song.id }
     val dl = downloads[song.id]
     var pickPlaylist by remember { mutableStateOf(false) }
+    var sharing by remember { mutableStateOf(false) }
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -108,18 +109,13 @@ fun SongActionsSheet(
             if (fromUserPlaylist != null) Action(Icons.Rounded.RemoveCircleOutline, "Remove from this playlist") {
                 close { graph.library.removeFromPlaylist(fromUserPlaylist, song.id) }
             }
-            Action(Icons.Rounded.Share, "Share") {
-                close {
-                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                        type = "text/plain"
-                        putExtra(android.content.Intent.EXTRA_TEXT, "🎵 ${song.title} — ${song.artist}" + if (song.album.isNotBlank()) " (${song.album})" else "")
-                    }
-                    context.startActivity(android.content.Intent.createChooser(send, "Share song"))
-                }
-            }
+            Action(Icons.Rounded.Share, "Share") { sharing = true }
         }
     }
 
+    if (sharing) {
+        ShareSheet(song.title, listOf(song)) { sharing = false; onDismiss() }
+    }
     if (pickPlaylist) {
         AddToPlaylistDialog(listOf(song)) { pickPlaylist = false; onDismiss() }
     }

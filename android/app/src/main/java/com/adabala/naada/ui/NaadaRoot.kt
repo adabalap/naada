@@ -57,6 +57,7 @@ import com.adabala.naada.ui.screens.NowPlayingScreen
 import com.adabala.naada.ui.screens.PlaylistScreen
 import com.adabala.naada.ui.screens.SearchScreen
 import com.adabala.naada.ui.screens.SettingsScreen
+import com.adabala.naada.ui.screens.SharedPlaylistScreen
 import com.adabala.naada.ui.screens.TriviaScreen
 import com.adabala.naada.ui.screens.UserPlaylistScreen
 
@@ -69,7 +70,12 @@ private val tabs = listOf(
 )
 
 @Composable
-fun NaadaRoot(openPlayer: Boolean, onPlayerOpened: () -> Unit) {
+fun NaadaRoot(
+    openPlayer: Boolean,
+    onPlayerOpened: () -> Unit,
+    sharedId: String? = null,
+    onSharedOpened: () -> Unit = {},
+) {
     val graph = LocalGraph.current
     val context = LocalContext.current
     val nc = rememberNavController()
@@ -79,6 +85,9 @@ fun NaadaRoot(openPlayer: Boolean, onPlayerOpened: () -> Unit) {
 
     LaunchedEffect(openPlayer) {
         if (openPlayer) { showPlayer = true; onPlayerOpened() }
+    }
+    LaunchedEffect(sharedId) {
+        if (sharedId != null) { showPlayer = false; runCatching { nav.shared(sharedId) }; onSharedOpened() }
     }
     LaunchedEffect(ui.error) {
         ui.error?.let { toast(context, it); graph.player.clearError() }
@@ -112,6 +121,7 @@ fun NaadaRoot(openPlayer: Boolean, onPlayerOpened: () -> Unit) {
                             composable("downloads") { DownloadsScreen() }
                             composable("settings") { SettingsScreen() }
                             composable("trivia") { TriviaScreen() }
+                            composable("shared/{id}") { SharedPlaylistScreen(it.arg("id")) }
                         }
                     }
 

@@ -106,6 +106,31 @@ class V1(unittest.TestCase):
         self.assertEqual(self.c.put("/api/v1/library/likes/x", json={"id": "y"}, headers=H).status_code, 400)
         self.assertEqual(self.c.post("/api/v1/library/playlists", json={}, headers=H).status_code, 400)
 
+    def test_clear_history(self):
+        items = [{"song": {"id": "h1"}, "played_at": 42.0}]
+        self.c.post("/api/v1/library/history", json={"items": items}, headers=H)
+        self.assertEqual(self.c.delete("/api/v1/library/history", headers=H).status_code, 200)
+        self.assertEqual(self.c.get("/api/v1/library", headers=H).get_json()["history"], [])
+
+    def test_share(self):
+        songs = [{"id": "s1", "title": "Inkem Inkem <script>", "artist": "Sid Sriram, X", "image": "http://c/a.jpg"}]
+        self.assertEqual(self.c.post("/api/v1/share", json={"name": "x", "songs": songs}).status_code, 401)
+        r = self.c.post("/api/v1/share", json={"name": "Road trip", "songs": songs}, headers=H)
+        self.assertEqual(r.status_code, 201)
+        sid = r.get_json()["id"]
+        self.assertTrue(r.get_json()["url"].endswith("/share/" + sid))
+        # Public, no token:
+        j = self.c.get(f"/api/v1/share/{sid}").get_json()
+        self.assertEqual(j["name"], "Road trip")
+        page = self.c.get(f"/share/{sid}")
+        self.assertEqual(page.status_code, 200)
+        body = page.get_data(as_text=True)
+        self.assertIn("open.spotify.com/search/Inkem%20Inkem", body)
+        self.assertNotIn("<script>", body)
+        self.assertIn("https://c/a.jpg", body)
+        self.assertEqual(self.c.get("/share/nope").status_code, 404)
+        self.assertEqual(self.c.post("/api/v1/share", json={"songs": []}, headers=H).status_code, 400)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

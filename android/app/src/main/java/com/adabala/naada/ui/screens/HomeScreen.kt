@@ -61,6 +61,7 @@ import com.adabala.naada.ui.components.PlaylistShelf
 import com.adabala.naada.ui.components.SongCardShelf
 import com.adabala.naada.ui.components.rememberLoader
 import com.adabala.naada.ui.theme.Brand
+import com.adabala.naada.ui.theme.LocalNaadaStyle
 import kotlinx.coroutines.launch
 import java.util.Calendar
 
@@ -143,7 +144,7 @@ private fun MoodCard(onSubmit: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
     Column(
         Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp))
-            .background(Brand.gradient).padding(18.dp)
+            .background(LocalNaadaStyle.current.heroBrush).padding(18.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Rounded.AutoAwesome, null, tint = Color.White)

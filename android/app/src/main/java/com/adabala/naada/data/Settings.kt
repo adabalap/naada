@@ -1,6 +1,7 @@
 package com.adabala.naada.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -22,6 +23,9 @@ data class AppSettings(
     val token: String = "",
     val homeLang: String = "telugu",
     val recentSearches: List<String> = emptyList(),
+    val theme: String = "system",        // see ThemeChoice
+    val followArt: Boolean = true,       // tint the app with the playing song's artwork
+    val libraryGrid: Boolean = false,
 )
 
 class SettingsStore(private val context: Context, scope: CoroutineScope) {
@@ -30,6 +34,9 @@ class SettingsStore(private val context: Context, scope: CoroutineScope) {
         val token = stringPreferencesKey("token")
         val lang = stringPreferencesKey("home_lang")
         val recents = stringPreferencesKey("recent_searches")
+        val theme = stringPreferencesKey("theme")
+        val followArt = booleanPreferencesKey("follow_art")
+        val grid = booleanPreferencesKey("library_grid")
     }
 
     private val listSer = ListSerializer(String.serializer())
@@ -42,6 +49,9 @@ class SettingsStore(private val context: Context, scope: CoroutineScope) {
             recentSearches = p[K.recents]?.let {
                 runCatching { NaadaJson.decodeFromString(listSer, it) }.getOrNull()
             } ?: emptyList(),
+            theme = p[K.theme] ?: "system",
+            followArt = p[K.followArt] ?: true,
+            libraryGrid = p[K.grid] ?: false,
         )
     }
 
@@ -63,6 +73,10 @@ class SettingsStore(private val context: Context, scope: CoroutineScope) {
         val list = (listOf(t) + state.value.recentSearches.filter { !it.equals(t, true) }).take(10)
         context.dataStore.edit { it[K.recents] = NaadaJson.encodeToString(listSer, list) }
     }
+
+    suspend fun setTheme(theme: String) = context.dataStore.edit { it[K.theme] = theme }
+    suspend fun setFollowArt(on: Boolean) = context.dataStore.edit { it[K.followArt] = on }
+    suspend fun setLibraryGrid(on: Boolean) = context.dataStore.edit { it[K.grid] = on }
 
     suspend fun clearRecentSearches() = context.dataStore.edit { it.remove(K.recents) }
 }

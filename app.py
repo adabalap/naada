@@ -115,6 +115,9 @@ def _require_token():
     if not NAADA_TOKEN:
         return None                       # gate disabled — original behaviour
     p = request.path
+    # Shared playlist links are public by design (view-only snapshots).
+    if request.method == "GET" and (p.startswith("/share/") or p.startswith("/api/v1/share/")):
+        return None
     if p.startswith(_OPEN_PATHS):
         return None                       # icons/manifest stay public so the
                                           # install prompt can still work
