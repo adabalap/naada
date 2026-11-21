@@ -39,9 +39,9 @@ class V1(unittest.TestCase):
         self.c = naada.app.test_client()
 
     def test_auth_required(self):
-        self.assertEqual(self.c.get("/api/v1/info").status_code, 401)
-        self.assertEqual(self.c.get("/api/v1/info", headers={"X-Naada-Token": "nope"}).status_code, 401)
-        self.assertEqual(self.c.get("/api/v1/info", headers={"Authorization": "Bearer test-token"}).status_code, 200)
+        self.assertEqual(self.c.get("/api/v1/search?q=x").status_code, 401)
+        self.assertEqual(self.c.get("/api/v1/search?q=x", headers={"X-Naada-Token": "nope"}).status_code, 401)
+        self.assertEqual(self.c.get("/api/v1/search?q=x", headers={"Authorization": "Bearer test-token"}).status_code, 200)
 
     def test_pwa_cookie_still_works(self):
         r = self.c.get("/?k=test-token")
@@ -130,6 +130,127 @@ class V1(unittest.TestCase):
         self.assertIn("https://c/a.jpg", body)
         self.assertEqual(self.c.get("/share/nope").status_code, 404)
         self.assertEqual(self.c.post("/api/v1/share", json={"songs": []}, headers=H).status_code, 400)
+
+
+class Accounts(unittest.TestCase):
+    def setUp(self):
+        self.c = naada.app.test_client()
+
+    def invite(self, **body):
+        r = self.c.post("/api/v1/admin/invites", json=body, headers=H)
+        self.assertEqual(r.status_code, 201)
+        return r.get_json()["code"]
+
+    def join(self, name, pin="2468", code=None):
+        r = self.c.post("/api/v1/auth/join", json={"code": code or self.invite(), "name": name, "pin": pin})
+        return r
+
+    def test_join_isolation_and_gate(self):
+        r = self.join("Lakshmi")
+        self.assertEqual(r.status_code, 200, r.get_json())
+        tok = r.get_json()["token"]
+        me = {"X-Naada-Token": tok}
+        # Personal token passes the NAADA_TOKEN gate for catalogue routes too.
+        self.assertEqual(self.c.get("/api/v1/search?q=x", headers=me).status_code, 200)
+        self.assertFalse(self.c.get("/api/v1/me", headers=me).get_json()["is_admin"])
+        # Her like doesn't appear in the owner's library and vice versa.
+        self.c.put("/api/v1/library/likes/her1", json={"id": "her1"}, headers=me)
+        self.c.put("/api/v1/library/likes/own1", json={"id": "own1"}, headers=H)
+        mine = [s["id"] for s in self.c.get("/api/v1/library", headers=me).get_json()["likes"]]
+        owners = [s["id"] for s in self.c.get("/api/v1/library", headers=H).get_json()["likes"]]
+        self.assertIn("her1", mine); self.assertNotIn("own1", mine)
+        self.assertIn("own1", owners); self.assertNotIn("her1", owners)
+        # She can't touch the owner's playlist, and isn't admin.
+        pid = self.c.post("/api/v1/library/playlists", json={"name": "Owner's"}, headers=H).get_json()["id"]
+        self.assertEqual(self.c.put(f"/api/v1/library/playlists/{pid}", json={"name": "x"}, headers=me).status_code, 404)
+        self.assertEqual(self.c.post("/api/v1/library/playlists", json={"id": pid, "name": "steal"}, headers=me).status_code, 409)
+        self.assertEqual(self.c.get("/api/v1/admin/users", headers=me).status_code, 403)
+        # Codes are single use; names are unique.
+        code = self.invite()
+        self.assertEqual(self.join("Ravi", code=code).status_code, 200)
+        self.assertEqual(self.join("Someone", code=code).status_code, 403)
+        self.assertEqual(self.join("lakshmi").status_code, 409)
+
+    def test_login_lockout_and_signin_code(self):
+        self.assertEqual(self.join("Anand", pin="1357").status_code, 200)
+        ok = self.c.post("/api/v1/auth/login", json={"name": "anand", "pin": "1357"})
+        self.assertEqual(ok.status_code, 200)
+        for _ in range(5):
+            self.assertEqual(self.c.post("/api/v1/auth/login", json={"name": "Anand", "pin": "0000"}).status_code, 403)
+        self.assertEqual(self.c.post("/api/v1/auth/login", json={"name": "Anand", "pin": "1357"}).status_code, 429)
+        # Admin issues a sign-in code; it resets the PIN and unlocks.
+        uid = ok.get_json()["user"]["id"]
+        code = self.invite(user_id=uid)
+        r = self.c.post("/api/v1/auth/join", json={"code": code.lower().replace("-", ""), "pin": "9999"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["user"]["name"], "Anand")
+        self.assertEqual(self.c.post("/api/v1/auth/login", json={"name": "Anand", "pin": "9999"}).status_code, 200)
+
+    def test_admin_remove_and_logout(self):
+        r = self.join("Temp")
+        tok, uid = r.get_json()["token"], r.get_json()["user"]["id"]
+        users = self.c.get("/api/v1/admin/users", headers=H).get_json()["users"]
+        self.assertTrue(any(u["id"] == uid for u in users))
+        self.assertEqual(self.c.delete(f"/api/v1/admin/users/{uid}", headers=H).status_code, 200)
+        self.assertEqual(self.c.get("/api/v1/me", headers={"X-Naada-Token": tok}).status_code, 401)
+        self.assertEqual(self.c.delete("/api/v1/admin/users/owner", headers=H).status_code, 400)
+        r2 = self.join("Temp")       # name is free again
+        self.assertEqual(r2.status_code, 200)
+        t2 = {"X-Naada-Token": r2.get_json()["token"]}
+        self.c.post("/api/v1/auth/logout", headers=t2)
+        self.assertEqual(self.c.get("/api/v1/library", headers=t2).status_code, 401)
+
+    def test_auth_open_without_token_and_pin_rules(self):
+        self.assertEqual(self.c.get("/api/v1/info").status_code, 200)
+        self.assertIsNone(self.c.get("/api/v1/info").get_json()["user"])
+        self.assertEqual(self.c.post("/api/v1/auth/join", json={"code": "ZZZZ-ZZZZ", "name": "x", "pin": "1234"}).status_code, 403)
+        self.assertEqual(self.join("ShortPin", pin="12").status_code, 400)
+        self.assertEqual(self.c.get("/api/v1/library").status_code, 401)
+
+    def test_owner_sets_pin_then_logs_in(self):
+        r = self.c.put("/api/v1/me", json={"name": "Phani", "pin": "4321"}, headers=H)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertTrue(r.get_json()["is_admin"])
+        lg = self.c.post("/api/v1/auth/login", json={"name": "phani", "pin": "4321"})
+        self.assertEqual(lg.status_code, 200)
+        self.assertEqual(lg.get_json()["user"]["id"], "owner")
+        # Changing it again needs the current PIN.
+        self.assertEqual(self.c.put("/api/v1/me", json={"pin": "1111"}, headers=H).status_code, 403)
+        self.assertEqual(self.c.put("/api/v1/me", json={"pin": "1111", "current_pin": "4321"}, headers=H).status_code, 200)
+
+    def test_ai_limit(self):
+        import api_v1
+        tok = {"X-Naada-Token": self.join("AiUser").get_json()["token"]}
+        old = api_v1.AI_DAILY_LIMIT
+        api_v1.AI_DAILY_LIMIT = 2
+        try:
+            codes = [self.c.get("/api/v1/ai/anecdote?title=x", headers=tok).get_json().get("error") for _ in range(3)]
+            self.assertEqual(codes[-1], "daily_limit")
+            self.assertNotEqual(self.c.get("/api/v1/ai/anecdote?title=x", headers=H).get_json().get("error"), "daily_limit")
+        finally:
+            api_v1.AI_DAILY_LIMIT = old
+
+
+class Migration(unittest.TestCase):
+    def test_v45_database_becomes_owners(self):
+        import sqlite3, api_v1
+        path = os.path.join(tempfile.mkdtemp(), "old.db")
+        conn = sqlite3.connect(path)
+        conn.executescript(api_v1.BASE_SCHEMA)
+        conn.execute("INSERT INTO likes VALUES('old1','{\"id\":\"old1\"}',1)")
+        conn.execute("INSERT INTO playlists VALUES('p1','Old list',1,1)")
+        conn.execute("INSERT INTO history(song_id, song_json, played_at) VALUES('old1','{\"id\":\"old1\"}',5)")
+        conn.execute("INSERT INTO meta VALUES('rev','7')")
+        conn.commit(); conn.close()
+        conn = sqlite3.connect(path); conn.row_factory = sqlite3.Row
+        api_v1._migrate(conn)
+        self.assertEqual(conn.execute("SELECT user_id FROM likes").fetchone()[0], "owner")
+        self.assertEqual(conn.execute("SELECT user_id FROM playlists").fetchone()[0], "owner")
+        self.assertEqual(conn.execute("SELECT user_id FROM history").fetchone()[0], "owner")
+        self.assertEqual(conn.execute("SELECT v FROM meta WHERE k='rev:owner'").fetchone()[0], "7")
+        self.assertEqual(conn.execute("SELECT is_admin FROM users WHERE id='owner'").fetchone()[0], 1)
+        api_v1._migrate(conn)       # idempotent
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 1)
 
 
 if __name__ == "__main__":

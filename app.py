@@ -107,6 +107,7 @@ if (os.environ.get("NAADA_HTTP_ONLY", "").lower() in ("1", "true", "yes")
 # Visit  https://your-domain/?k=YOUR_TOKEN  once and the cookie is stored.
 # ─────────────────────────────────────────────────────────────────────────
 NAADA_TOKEN = os.environ.get("NAADA_TOKEN", "").strip()
+_user_token_check = None      # set once api_v1 is registered
 _OPEN_PATHS = ("/sw.js", "/manifest.json", "/favicon.ico", "/static/icons/")
 
 
@@ -129,6 +130,12 @@ def _require_token():
     if not hdr and auth.lower().startswith("bearer "):
         hdr = auth[7:]
     if hdr and hmac.compare_digest(hdr.strip(), NAADA_TOKEN):
+        return None
+    # Family & friends sign in with personal tokens (see api_v1 accounts),
+    # and must be able to reach the join / sign-in endpoints without one.
+    if hdr and _user_token_check is not None and _user_token_check(hdr.strip()):
+        return None
+    if p.startswith(("/api/v1/auth/", "/api/v1/info")):
         return None
     if hmac.compare_digest(request.cookies.get("naada_k", ""), NAADA_TOKEN):
         return None
@@ -1144,9 +1151,10 @@ def debug_decrypt():
 _start_time = time.time()
 
 # ── API v1 (native app contract) — must come after every /api/* route ──────
-from api_v1 import register_v1
+from api_v1 import register_v1, user_token_valid
 register_v1(app, BASE_DIR, _resolve_song,
             lambda: bool(CONFIG.get("gemini_api_key")))
+_user_token_check = user_token_valid
 
 # ── Request logging middleware ─────────────────────────────────────────────
 @app.before_request
