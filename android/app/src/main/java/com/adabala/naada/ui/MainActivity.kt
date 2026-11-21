@@ -50,6 +50,8 @@ class Nav(private val nc: NavHostController) {
     fun downloads() = go("downloads")
     fun settings() = go("settings")
     fun trivia() = go("trivia")
+    fun newReleases(lang: String) = go("newreleases/$lang")
+    fun featured(lang: String) = go("featured/$lang")
     fun shared(id: String) = go("shared/${Uri.encode(id)}")
     fun profiles() = go("profiles")
     fun addProfile() = go("addprofile")

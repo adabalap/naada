@@ -34,6 +34,10 @@ import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.adabala.naada.ui.components.ScrollToTopButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -102,7 +106,9 @@ fun CollectionScaffold(
     val allDownloaded = songs.isNotEmpty() && songs.all { downloads[it.id]?.done == true }
     val top = (art?.muted ?: MaterialTheme.colorScheme.primaryContainer).copy(alpha = .55f)
 
-    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+    val listState = rememberLazyListState()
+    Box(modifier.fillMaxSize()) {
+    LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
             Column(
                 Modifier.fillMaxWidth()
@@ -132,7 +138,8 @@ fun CollectionScaffold(
                         Text(description, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
                     }
                     Spacer(Modifier.height(16.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    // Secondary actions on the left, one big Play on the right — never squeezed.
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilledTonalIconButton(
                             enabled = songs.isNotEmpty(),
                             onClick = {
@@ -141,13 +148,14 @@ fun CollectionScaffold(
                             }
                         ) { Icon(if (allDownloaded) Icons.Rounded.DownloadDone else Icons.Rounded.Download, "Download all") }
                         headerActions()
-                        FilledTonalIconButton(enabled = songs.isNotEmpty(), onClick = { graph.player.play(songs, shuffle = true) }) {
+                        Spacer(Modifier.weight(1f))
+                        FilledTonalIconButton(enabled = songs.isNotEmpty(), onClick = { graph.player.play(songs, shuffle = true) },
+                            modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Rounded.Shuffle, "Shuffle")
                         }
-                        Button(enabled = songs.isNotEmpty(), onClick = { graph.player.play(songs, 0) }, modifier = Modifier.height(48.dp)) {
-                            Icon(Icons.Rounded.PlayArrow, null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Play")
+                        FilledIconButton(enabled = songs.isNotEmpty(), onClick = { graph.player.play(songs, 0) },
+                            modifier = Modifier.size(60.dp)) {
+                            Icon(Icons.Rounded.PlayArrow, "Play", Modifier.size(34.dp))
                         }
                     }
                     Spacer(Modifier.height(8.dp))
@@ -163,6 +171,8 @@ fun CollectionScaffold(
             )
         }
         item { footer() }
+    }
+    ScrollToTopButton(listState)
     }
 
     actionFor?.let { s -> SongActionsSheet(s, onDismiss = { actionFor = null }, fromUserPlaylist = userPlaylistId) }
@@ -233,7 +243,7 @@ fun ChartsScreen(lang: String) {
 @Composable
 fun MoodScreen(prompt: String) {
     val graph = LocalGraph.current
-    val lang = graph.settings.state.value.homeLang
+    val lang = graph.currentLang()
     val l = rememberLoader(prompt) { graph.api.mood(prompt, lang) }
     Loaded(l.state, l.reload) { m ->
         when {
@@ -341,9 +351,9 @@ fun UserPlaylistScreen(id: String) {
     CollectionScaffold(
         pl.name, "${pl.songs.size} songs", "", pl.songs, mosaic = true, userPlaylistId = id,
         emptyTitle = "Empty playlist", emptyBody = "Add songs from any song's ⋮ menu.",
-        headerActions = {
-            FilledTonalIconButton(onClick = { renaming = true }) { Icon(Icons.Rounded.Edit, "Rename") }
-            FilledTonalIconButton(onClick = { deleting = true }) { Icon(Icons.Rounded.Delete, "Delete") }
+        topActions = {
+            IconButton(onClick = { renaming = true }) { Icon(Icons.Rounded.Edit, "Rename") }
+            IconButton(onClick = { deleting = true }) { Icon(Icons.Rounded.Delete, "Delete") }
         },
     )
     if (renaming) NameDialog("Rename playlist", pl.name, onDismiss = { renaming = false }) {

@@ -36,6 +36,16 @@ class AppGraph(app: Application) {
     val playback = PlaybackGraph(app, api)
     val queueStore = QueueStore(app)
     val player = PlayerController(app, scope, playback)
+
+    /** Music language of whoever is listening (profile first, then this phone's default). */
+    fun currentLang(): String =
+        profiles.state.value.current?.lang?.takeIf { it.isNotEmpty() } ?: settings.state.value.homeLang
+
+    fun setLang(lang: String) {
+        val p = profiles.state.value.current
+        if (p != null) profiles.setLang(p.userId, lang)
+        else scope.launch { settings.setHomeLang(lang) }
+    }
 }
 
 class NaadaApp : Application(), ImageLoaderFactory {

@@ -76,13 +76,14 @@ fun LibraryScreen() {
     val grid = settings.libraryGrid
     var creating by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
     PullToRefreshBox(
         isRefreshing = refreshing,
         onRefresh = { scope.launch { refreshing = true; graph.library.sync(); refreshing = false } },
         modifier = Modifier.fillMaxSize(),
     ) {
-        LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), state = listState, contentPadding = PaddingValues(bottom = 24.dp)) {
             item {
                 Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Your library", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
@@ -163,6 +164,7 @@ fun LibraryScreen() {
                 }
             }
         }
+        com.adabala.naada.ui.components.ScrollToTopButton(listState, tab = "library")
     }
 
     if (creating) {
@@ -188,6 +190,10 @@ private fun QuickTile(title: String, subtitle: String, icon: ImageVector, brush:
 
 @Composable
 fun PlaylistMosaic(images: List<String>, size: androidx.compose.ui.unit.Dp = 56.dp) {
+    // A 2×2 grid only when there are four different covers; otherwise one cover
+    // (a playlist from a single album shouldn't show the same art four times).
+    val distinct = images.filter { it.isNotBlank() }.distinct()
+    val images = if (distinct.size >= 4) distinct.take(4) else distinct.take(1)
     Box(Modifier.size(size).clip(RoundedCornerShape(LocalNaadaStyle.current.corner * 0.7f)).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
         when {
             images.isEmpty() -> Icon(Icons.AutoMirrored.Rounded.QueueMusic, null, Modifier.align(Alignment.Center), tint = MaterialTheme.colorScheme.onSurfaceVariant)

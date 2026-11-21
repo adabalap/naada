@@ -17,6 +17,7 @@ data class Profile(
     val color: String = "#E11D75",
     val token: String,
     val isAdmin: Boolean = false,
+    val lang: String = "",          // preferred music language; "" = phone default
 )
 
 @Serializable
@@ -64,6 +65,10 @@ class ProfileStore(context: Context) {
         s.copy(profiles = s.profiles.map {
             if (it.userId == user.id) it.copy(name = user.name, color = user.color, isAdmin = user.isAdmin) else it
         })
+    }
+
+    fun setLang(userId: String, lang: String) = edit { s ->
+        s.copy(profiles = s.profiles.map { if (it.userId == userId) it.copy(lang = lang) else it })
     }
 
     fun setAskOnLaunch(on: Boolean) = edit { it.copy(askOnLaunch = on) }

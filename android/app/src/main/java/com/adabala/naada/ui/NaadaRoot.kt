@@ -68,6 +68,12 @@ import com.adabala.naada.ui.screens.ProfilesScreen
 import com.adabala.naada.ui.screens.AddProfileScreen
 import com.adabala.naada.ui.screens.AdminScreen
 import com.adabala.naada.ui.screens.TriviaScreen
+import com.adabala.naada.ui.screens.NewReleasesScreen
+import com.adabala.naada.ui.screens.FeaturedPlaylistsScreen
+import com.adabala.naada.ui.components.LocalTabReselect
+import kotlinx.coroutines.flow.MutableSharedFlow
+import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.outlined.Lightbulb
 import com.adabala.naada.ui.screens.UserPlaylistScreen
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector, val selectedIcon: ImageVector)
@@ -75,8 +81,10 @@ private data class Tab(val route: String, val label: String, val icon: ImageVect
 private val tabs = listOf(
     Tab("home", "Home", Icons.Outlined.Home, Icons.Rounded.Home),
     Tab("search", "Search", Icons.Outlined.Search, Icons.Rounded.Search),
+    Tab("trivia", "Trivia", Icons.Outlined.Lightbulb, Icons.Rounded.Lightbulb),
     Tab("library", "Library", Icons.Outlined.LibraryMusic, Icons.Rounded.LibraryMusic),
 )
+private val tabRoutes = tabs.map { it.route }.toSet()
 
 @Composable
 fun NaadaRoot(
@@ -91,6 +99,8 @@ fun NaadaRoot(
     val nav = remember(nc) { Nav(nc) }
     val ui by graph.player.ui.collectAsState()
     var showPlayer by rememberSaveable { mutableStateOf(false) }
+    var currentTab by rememberSaveable { mutableStateOf("home") }
+    val reselect = remember { MutableSharedFlow<String>(extraBufferCapacity = 1) }
     var undo by remember { mutableStateOf<SavedQueue?>(null) }
     LaunchedEffect(undo) { if (undo != null) { delay(5000); undo = null } }
     LaunchedEffect(ui.song?.id) { if (ui.song != null) undo = null }
@@ -115,11 +125,20 @@ fun NaadaRoot(
     }
     BackHandler(enabled = showPlayer) { showPlayer = false }
 
-    CompositionLocalProvider(LocalNav provides nav) {
+    CompositionLocalProvider(LocalNav provides nav, LocalTabReselect provides reselect) {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize()) {
                 val backStack by nc.currentBackStackEntryAsState()
                 val route = backStack?.destination?.route
+                // Landing on a tab's main screen (by back, deep link…) makes it the current tab.
+                LaunchedEffect(route) { if (route in tabRoutes) currentTab = route!! }
+                // Going anywhere new closes the full-screen player (e.g. "Go to album").
+                var lastEntry by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(backStack?.id) {
+                    val id = backStack?.id
+                    if (lastEntry != null && id != lastEntry) showPlayer = false
+                    lastEntry = id
+                }
 
                 Column(Modifier.fillMaxSize()) {
                     Box(Modifier.weight(1f)) {
@@ -136,6 +155,8 @@ fun NaadaRoot(
                             composable("playlist/{id}") { PlaylistScreen(it.arg("id")) }
                             composable("userpl/{id}") { UserPlaylistScreen(it.arg("id")) }
                             composable("charts/{lang}") { ChartsScreen(it.arg("lang")) }
+                            composable("newreleases/{lang}") { NewReleasesScreen(it.arg("lang")) }
+                            composable("featured/{lang}") { FeaturedPlaylistsScreen(it.arg("lang")) }
                             composable("mood/{prompt}") { MoodScreen(it.arg("prompt")) }
                             composable("liked") { LikedScreen() }
                             composable("history") { HistoryScreen() }
@@ -161,14 +182,25 @@ fun NaadaRoot(
 
                     NavigationBar(tonalElevation = 0.dp, containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
                         tabs.forEach { tab ->
-                            val selected = route == tab.route
+                            val selected = currentTab == tab.route
                             NavigationBarItem(
                                 selected = selected,
                                 onClick = {
-                                    nc.navigate(tab.route) {
-                                        popUpTo(nc.graph.findStartDestination().id) { saveState = true }
-                                        launchSingleTop = true
-                                        restoreState = true
+                                    showPlayer = false
+                                    when {
+                                        // Already on this tab's main screen: scroll it to the top.
+                                        selected && route == tab.route -> reselect.tryEmit(tab.route)
+                                        // Deeper inside this tab: go back to its main screen.
+                                        selected && nc.popBackStack(tab.route, inclusive = false) -> Unit
+                                        // Another tab: switch, keeping each tab's own history.
+                                        else -> {
+                                            currentTab = tab.route
+                                            nc.navigate(tab.route) {
+                                                popUpTo(nc.graph.findStartDestination().id) { saveState = true }
+                                                launchSingleTop = true
+                                                restoreState = true
+                                            }
+                                        }
                                     }
                                 },
                                 icon = { Icon(if (selected) tab.selectedIcon else tab.icon, tab.label) },

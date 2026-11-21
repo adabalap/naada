@@ -274,14 +274,18 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 @Composable
 fun TriviaScreen() {
     val graph = LocalGraph.current
-    val nav = LocalNav.current
-    val recent = remember { graph.library.recentSongs(8) }
-    val l = rememberLoader("trivia") { graph.api.trivia(recent) }
+    val lib by graph.library.library.collectAsState()
+    // New questions whenever what you've been playing changes (and per profile).
+    val recent = remember(lib.history) { graph.library.recentSongs(8) }
+    val key = recent.joinToString(",") { it.id }
+    val l = rememberLoader(key) { if (recent.isEmpty()) com.adabala.naada.data.TriviaResponse() else graph.api.trivia(recent) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = nav::back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back") }
-            Text("Trivia", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+        Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 8.dp)) {
+            Text("Trivia", style = MaterialTheme.typography.headlineMedium)
+            Text("Stories and questions from the songs you've been playing",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         when (val s = l.state) {
             is Load.Loading -> LoadingBox()
@@ -290,19 +294,26 @@ fun TriviaScreen() {
                 val cards = s.value.cards
                 if (cards.isEmpty()) {
                     MessageBox(
-                        "No trivia right now",
-                        if (s.value.error == "ai_disabled") "Add a Gemini key on your server to unlock trivia."
-                        else if (s.value.error == "daily_limit") "You've used today's AI allowance — more tomorrow!"
-                        else "Play a few more songs, or try again in a minute.",
-                        icon = Icons.Rounded.Lightbulb, action = "Try again", onAction = l.reload
+                        if (recent.isEmpty()) "Play something first" else "No trivia right now",
+                        when {
+                            recent.isEmpty() -> "Trivia is made from your listening — play a few songs and come back."
+                            s.value.error == "ai_disabled" -> "Add a Gemini key on your server to unlock trivia."
+                            s.value.error == "daily_limit" -> "You've used today's AI allowance — more tomorrow!"
+                            else -> "The AI is busy — try again in a minute."
+                        },
+                        icon = Icons.Rounded.Lightbulb,
+                        action = if (recent.isEmpty()) null else "Try again", onAction = l.reload
                     )
-                } else LazyColumn(Modifier.fillMaxSize()) {
-                    items(cards) { c -> TriviaCardView(c.question, c.answer, c.song) }
-                    item {
-                        Text("AI-generated from your recent listening — details may be imperfect.",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(20.dp))
+                } else Box(Modifier.fillMaxSize()) {
+                    LazyColumn(Modifier.fillMaxSize(), state = listState) {
+                        items(cards) { c -> TriviaCardView(c.question, c.answer, c.song) }
+                        item {
+                            Text("AI-generated from your recent listening — details may be imperfect.",
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(20.dp))
+                        }
                     }
+                    com.adabala.naada.ui.components.ScrollToTopButton(listState, tab = "trivia")
                 }
             }
         }

@@ -73,6 +73,7 @@ data class HomeShelves(
 
 @Serializable data class SongList(val songs: List<Song> = emptyList(), val title: String = "")
 @Serializable data class AlbumList(val albums: List<Album> = emptyList())
+@Serializable data class PlaylistList(val playlists: List<PlaylistRef> = emptyList())
 @Serializable data class ArtistList(val artists: List<Artist> = emptyList())
 
 @Serializable

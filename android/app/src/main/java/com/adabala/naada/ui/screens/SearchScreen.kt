@@ -67,6 +67,16 @@ import androidx.compose.runtime.remember
 
 private val TYPES = listOf("Songs", "Albums", "Artists")
 
+/** Results survive leaving Search (open an album, come back — no reload). */
+private object SearchCache {
+    private val map = object : LinkedHashMap<String, List<Any>>(32, .75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Any>>?) = size > 30
+    }
+    @Suppress("UNCHECKED_CAST")
+    fun <T> get(type: Int, q: String): List<T>? = synchronized(map) { map["$type|${q.lowercase()}"] as List<T>? }
+    fun put(type: Int, q: String, v: List<Any>) = synchronized(map) { map["$type|${q.lowercase()}"] = v }
+}
+
 @Composable
 fun SearchScreen() {
     val graph = LocalGraph.current
@@ -85,16 +95,28 @@ fun SearchScreen() {
     var artists by remember { mutableStateOf<Load<List<Artist>>?>(null) }
     var actionFor by remember { mutableStateOf<Song?>(null) }
     val focus = remember { FocusRequester() }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    // Tapping Search again: back to the top and ready to type.
+    com.adabala.naada.ui.components.ScrollToTopOnReselect("search") {
+        runCatching { listState.scrollToItem(0) }
+        runCatching { focus.requestFocus() }
+        keyboard?.show()
+    }
 
     LaunchedEffect(query, type) {
         val q = query.trim()
         if (q.length < 2) { songs = null; albums = null; artists = null; return@LaunchedEffect }
+        when (type) {
+            0 -> SearchCache.get<Song>(0, q)?.let { songs = Load.Ready(it); return@LaunchedEffect }
+            1 -> SearchCache.get<Album>(1, q)?.let { albums = Load.Ready(it); return@LaunchedEffect }
+            else -> SearchCache.get<Artist>(2, q)?.let { artists = Load.Ready(it); return@LaunchedEffect }
+        }
         delay(350)   // debounce typing
         try {
             when (type) {
-                0 -> { songs = Load.Loading; songs = Load.Ready(graph.api.searchSongs(q).songs) }
-                1 -> { albums = Load.Loading; albums = Load.Ready(graph.api.searchAlbums(q).albums) }
-                else -> { artists = Load.Loading; artists = Load.Ready(graph.api.searchArtists(q).artists) }
+                0 -> { songs = Load.Loading; val r = graph.api.searchSongs(q).songs; SearchCache.put(0, q, r); songs = Load.Ready(r) }
+                1 -> { albums = Load.Loading; val r = graph.api.searchAlbums(q).albums; SearchCache.put(1, q, r); albums = Load.Ready(r) }
+                else -> { artists = Load.Loading; val r = graph.api.searchArtists(q).artists; SearchCache.put(2, q, r); artists = Load.Ready(r) }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -147,7 +169,7 @@ fun SearchScreen() {
             } else when (type) {
                 0 -> {
                     val list = (songs as Load.Ready).value
-                    LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
+                    LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 16.dp)) {
                         itemsIndexed(list) { i, s ->
                             SongRow(
                                 s, onClick = { commit(); graph.player.play(list, i) }, onMore = { actionFor = s },

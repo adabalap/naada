@@ -85,6 +85,8 @@ class NaadaApi(private val settings: SettingsStore, private val profiles: Profil
     suspend fun home(lang: String): HomeShelves = get("home/$lang", ser())
     suspend fun charts(lang: String): SongList = get("charts/$lang", ser())
     suspend fun trending(lang: String): SongList = get("trending/$lang", ser())
+    suspend fun newReleases(lang: String): AlbumList = get("new-releases", ser(), mapOf("lang" to lang))
+    suspend fun featured(lang: String): PlaylistList = get("featured", ser(), mapOf("lang" to lang))
     suspend fun searchSongs(q: String): SongList = get("search", ser(), mapOf("q" to q))
     suspend fun searchAlbums(q: String): AlbumList = get("search/albums", ser(), mapOf("q" to q))
     suspend fun searchArtists(q: String): ArtistList = get("search/artists", ser(), mapOf("q" to q))

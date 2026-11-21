@@ -246,18 +246,18 @@ fun CoverCard(
 fun Modifier.combinedClickableSimple(onClick: () -> Unit): Modifier = this.combinedClickable(onClick = onClick)
 
 @Composable
-fun AlbumShelf(title: String, albums: List<Album>, onOpen: (Album) -> Unit) {
+fun AlbumShelf(title: String, albums: List<Album>, onSeeAll: (() -> Unit)? = null, onOpen: (Album) -> Unit) {
     if (albums.isEmpty()) return
-    SectionHeader(title)
+    SectionHeader(title, action = if (onSeeAll != null) "See all" else null, onAction = onSeeAll)
     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         items(albums) { a -> CoverCard(a.title, a.artist.ifBlank { a.year }, a.image, { onOpen(a) }) }
     }
 }
 
 @Composable
-fun PlaylistShelf(title: String, playlists: List<PlaylistRef>, onOpen: (PlaylistRef) -> Unit) {
+fun PlaylistShelf(title: String, playlists: List<PlaylistRef>, onSeeAll: (() -> Unit)? = null, onOpen: (PlaylistRef) -> Unit) {
     if (playlists.isEmpty()) return
-    SectionHeader(title)
+    SectionHeader(title, action = if (onSeeAll != null) "See all" else null, onAction = onSeeAll)
     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         items(playlists) { p -> CoverCard(p.title, "", p.image, { onOpen(p) }) }
     }

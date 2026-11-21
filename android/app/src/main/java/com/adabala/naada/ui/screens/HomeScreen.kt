@@ -34,6 +34,8 @@ import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.DownloadForOffline
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.adabala.naada.ui.components.ScrollToTopButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.ui.graphics.Brush
@@ -89,25 +91,23 @@ private fun greeting(): String = when (Calendar.getInstance().get(Calendar.HOUR_
 fun HomeScreen() {
     val graph = LocalGraph.current
     val nav = LocalNav.current
-    val scope = rememberCoroutineScope()
     val settings by graph.settings.state.collectAsState()
     val lib by graph.library.library.collectAsState()
     val profiles by graph.profiles.state.collectAsState()
-    val lang = settings.homeLang
+    val lang = profiles.current?.lang?.takeIf { it.isNotEmpty() } ?: settings.homeLang
     val home = rememberLoader(lang, settings.serverUrl, settings.token, profiles.active) { graph.api.home(lang) }
     val recent = remember(lib.history) { graph.library.recentSongs(16) }
-    val downloads by graph.playback.downloads.collectAsState()
-    val downloadsCount = downloads.values.count { it.done }
     var profileMenu by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
 
     PullToRefreshBox(
         isRefreshing = home.refreshing,
         onRefresh = { home.reload(); graph.library.scheduleSync() },
         modifier = Modifier.fillMaxSize()
     ) {
-        LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), state = listState, contentPadding = PaddingValues(bottom = 24.dp)) {
             item {
-                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("నాద · ${greeting()}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                         Text(
@@ -123,18 +123,6 @@ fun HomeScreen() {
                     }
                 }
             }
-            item {
-                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(LANGS) { (code, label) ->
-                        FilterChip(
-                            selected = lang == code,
-                            onClick = { scope.launch { graph.settings.setHomeLang(code) } },
-                            label = { Text(label) },
-                        )
-                    }
-                }
-            }
-            item { QuickAccess(lib.likes.size, downloadsCount, lib.playlists.take(4)) }
             item { MoodCard(onSubmit = { nav.mood(it) }) }
 
             if (recent.isNotEmpty()) item {
@@ -149,16 +137,17 @@ fun HomeScreen() {
                 }
                 is Load.Ready -> {
                     val h = s.value
+                    val langLabel = LANGS.firstOrNull { it.first == lang }?.second ?: ""
                     item {
-                        SongCardShelf("Top charts", h.trending.take(15), onPlay = { graph.player.play(h.trending, it) },
+                        SongCardShelf("Top charts · $langLabel", h.trending.take(15), onPlay = { graph.player.play(h.trending, it) },
                             action = "See all", onAction = { nav.charts(lang) })
                     }
-                    item { AlbumShelf("New releases", h.newAlbums) { nav.album(it.id) } }
-                    item { PlaylistShelf("Curated playlists", h.playlists) { nav.playlist(it.id) } }
+                    item { AlbumShelf("New releases", h.newAlbums, onSeeAll = { nav.newReleases(lang) }) { nav.album(it.id) } }
+                    item { PlaylistShelf("Curated playlists", h.playlists, onSeeAll = { nav.featured(lang) }) { nav.playlist(it.id) } }
                 }
             }
-            if (recent.size >= 3) item { TriviaTeaser(onClick = nav::trivia) }
         }
+        ScrollToTopButton(listState, tab = "home")
     }
     if (profileMenu) ProfileMenuSheet(onDismiss = { profileMenu = false })
 }
@@ -169,6 +158,7 @@ private fun ProfileMenuSheet(onDismiss: () -> Unit) {
     val graph = LocalGraph.current
     val nav = LocalNav.current
     val profiles by graph.profiles.state.collectAsState()
+    val settings by graph.settings.state.collectAsState()
     val sync by graph.library.syncState.collectAsState()
     val me = profiles.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -187,6 +177,15 @@ private fun ProfileMenuSheet(onDismiss: () -> Unit) {
                         },
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+            }
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            Text("Music language", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 24.dp, top = 4.dp))
+            val lang = graph.currentLang()
+            LazyRow(contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(LANGS) { (code, label) ->
+                    FilterChip(selected = lang == code, onClick = { graph.setLang(code) }, label = { Text(label) })
                 }
             }
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
@@ -215,44 +214,6 @@ private fun MenuRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label
         Spacer(Modifier.width(20.dp))
         Text(label, style = MaterialTheme.typography.bodyLarge)
     }
-}
-
-/** Spotify-style quick tiles: one tap to your most-used places. */
-@Composable
-private fun QuickAccess(liked: Int, downloads: Int, playlists: List<com.adabala.naada.data.UserPlaylist>) {
-    val nav = LocalNav.current
-    data class Tile(val title: String, val images: List<String>, val icon: androidx.compose.ui.graphics.vector.ImageVector?, val brush: Brush?, val onClick: () -> Unit)
-    val style = LocalNaadaStyle.current
-    val tiles = buildList {
-        add(Tile("Liked songs", emptyList(), Icons.Rounded.Favorite, Brush.linearGradient(style.hero.take(2)), nav::liked))
-        add(Tile(if (downloads > 0) "Downloads · $downloads" else "Downloads", emptyList(), Icons.Rounded.DownloadForOffline,
-            Brush.linearGradient(listOf(Brand.Teal, Brand.Purple)), nav::downloads))
-        playlists.forEach { p -> add(Tile(p.name, p.songs.take(4).map { it.image }, null, null) { nav.userPlaylist(p.id) }) }
-    }
-    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        tiles.chunked(2).forEach { pair ->
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                pair.forEach { t ->
-                    Row(
-                        Modifier.weight(1f).height(56.dp).clip(RoundedCornerShape(style.corner * 0.6f))
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(onClick = t.onClick),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (t.icon != null && t.brush != null) {
-                            Box(Modifier.size(56.dp).background(t.brush), contentAlignment = Alignment.Center) {
-                                Icon(t.icon, null, tint = Color.White)
-                            }
-                        } else PlaylistMosaic(t.images, size = 56.dp)
-                        Spacer(Modifier.width(10.dp))
-                        Text(t.title, style = MaterialTheme.typography.labelLarge, maxLines = 2,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.padding(end = 8.dp))
-                    }
-                }
-                if (pair.size == 1) Spacer(Modifier.weight(1f))
-            }
-        }
-    }
-    Spacer(Modifier.height(16.dp))
 }
 
 @Composable
@@ -292,22 +253,5 @@ private fun MoodCard(onSubmit: (String) -> Unit) {
             keyboardActions = KeyboardActions(onGo = { if (text.isNotBlank()) onSubmit(text.trim()) }),
             modifier = Modifier.fillMaxWidth(),
         )
-    }
-}
-
-@Composable
-private fun TriviaTeaser(onClick: () -> Unit) {
-    Row(
-        Modifier.padding(16.dp).fillMaxWidth().clip(RoundedCornerShape(18.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(onClick = onClick).padding(18.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(Icons.Rounded.Lightbulb, null, tint = Brand.Gold, modifier = Modifier.size(32.dp))
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
-            Text("Trivia from your listening", style = MaterialTheme.typography.titleMedium)
-            Text("Stories behind the songs you've been playing", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Icon(Icons.AutoMirrored.Rounded.ArrowForward, null)
     }
 }
