@@ -142,3 +142,27 @@ release page; later builds install over it as updates.
   To switch to a private key, add repository secrets `NAADA_KEYSTORE_BASE64`,
   `NAADA_KEYSTORE_PASSWORD`, `NAADA_KEY_ALIAS`, `NAADA_KEY_PASSWORD`
   (switching keys means one uninstall/reinstall).
+
+## v46 — accounts for family & friends
+
+Each person has their own library. Your existing library becomes the owner's.
+The database migrates itself on first start (back up `library.db` first if you like).
+
+1. `git pull && sudo systemctl restart naada`
+2. **Lock the server** — once others join, an open server treats anyone as the owner:
+   ```bash
+   sudo systemctl edit naada
+   # add:
+   [Service]
+   Environment=NAADA_TOKEN=<long random string, e.g. from: openssl rand -hex 24>
+   Environment=NAADA_OWNER_NAME=Phani
+   # optional: Environment=NAADA_AI_DAILY_LIMIT=60
+   sudo systemctl restart naada
+   ```
+3. In the app (owner's phone): Settings → Your server → paste the token → **Save & test**,
+   then tap the avatar → **I run this server — set up the owner profile** (name + PIN).
+4. PWA: open `https://naada.adabala.com/?k=<token>` once per browser.
+5. Settings → Account → **Family & friends** → **Create invite code** → Send on WhatsApp.
+   Friends install the APK, tap the avatar → Add → *I have an invite*.
+
+Friends never need NAADA_TOKEN. Forgot PIN → Family & friends → ⋮ → Sign-in code.
