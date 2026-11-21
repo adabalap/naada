@@ -11,6 +11,12 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.TextButton
+import com.adabala.naada.playback.SavedQueue
+import kotlinx.coroutines.delay
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LibraryMusic
@@ -85,6 +91,9 @@ fun NaadaRoot(
     val nav = remember(nc) { Nav(nc) }
     val ui by graph.player.ui.collectAsState()
     var showPlayer by rememberSaveable { mutableStateOf(false) }
+    var undo by remember { mutableStateOf<SavedQueue?>(null) }
+    LaunchedEffect(undo) { if (undo != null) { delay(5000); undo = null } }
+    LaunchedEffect(ui.song?.id) { if (ui.song != null) undo = null }
 
     LaunchedEffect(openPlayer) {
         if (openPlayer) { showPlayer = true; onPlayerOpened() }
@@ -141,7 +150,13 @@ fun NaadaRoot(
                     }
 
                     AnimatedVisibility(visible = ui.song != null) {
-                        MiniPlayer(onOpen = { showPlayer = true })
+                        MiniPlayer(onOpen = { showPlayer = true }, onDismiss = { undo = graph.player.dismiss() })
+                    }
+                    AnimatedVisibility(visible = undo != null) {
+                        UndoBar("Player closed", onUndo = {
+                            undo?.let { graph.player.restore(it) }
+                            undo = null
+                        })
                     }
 
                     NavigationBar(tonalElevation = 0.dp, containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
@@ -172,6 +187,20 @@ fun NaadaRoot(
                     NowPlayingScreen(onClose = { showPlayer = false })
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun UndoBar(text: String, onUndo: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.inverseSurface,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+    ) {
+        Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(text, color = MaterialTheme.colorScheme.inverseOnSurface, modifier = Modifier.weight(1f))
+            TextButton(onClick = onUndo) { Text("Undo", color = MaterialTheme.colorScheme.inversePrimary) }
         }
     }
 }

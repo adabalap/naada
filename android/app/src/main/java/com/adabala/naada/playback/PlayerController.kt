@@ -180,6 +180,25 @@ class PlayerController(
         if (start < c.mediaItemCount) c.removeMediaItems(start, c.mediaItemCount)
     }
 
+    /** Close the player: stop, clear the queue, drop the notification. Returns what to undo. */
+    fun dismiss(): SavedQueue? {
+        val c = controller ?: return null
+        val songs = (0 until c.mediaItemCount).mapNotNull { c.getMediaItemAt(it).toSong() }
+        val saved = if (songs.isEmpty()) null else SavedQueue(songs, c.currentMediaItemIndex, c.currentPosition)
+        setSleepTimer(null)
+        c.stop()
+        c.clearMediaItems()
+        return saved
+    }
+
+    /** Bring back a dismissed queue, paused where it was. */
+    fun restore(saved: SavedQueue) {
+        val c = controller ?: return
+        saved.songs.forEach { graph.resolver.prime(it) }
+        c.setMediaItems(saved.songs.map { it.toMediaItem() }, saved.index.coerceIn(0, saved.songs.lastIndex), saved.positionMs)
+        c.prepare()
+    }
+
     fun toggleShuffle() { controller?.let { it.shuffleModeEnabled = !it.shuffleModeEnabled } }
 
     fun cycleRepeat() {

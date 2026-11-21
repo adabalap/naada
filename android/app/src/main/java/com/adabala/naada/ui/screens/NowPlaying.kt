@@ -11,6 +11,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -86,6 +87,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import com.adabala.naada.ui.theme.LocalNaadaStyle
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -173,7 +177,8 @@ fun NowPlayingScreen(onClose: () -> Unit) {
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     val heartScale by animateFloatAsState(if (liked) 1.15f else 1f, spring(dampingRatio = .35f), label = "heart")
-                    IconButton(onClick = { graph.library.toggleLike(song) }) {
+                    val haptics = LocalHapticFeedback.current
+                    IconButton(onClick = { graph.library.toggleLike(song); haptics.performHapticFeedback(HapticFeedbackType.LongPress) }) {
                         Icon(if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, "Like",
                             tint = if (liked) Brand.Rose else Color.White, modifier = Modifier.size(28.dp).scale(heartScale))
                     }
@@ -468,45 +473,70 @@ private fun SleepDialog(onPick: (Int?) -> Unit, onDismiss: () -> Unit) {
 
 // ── Mini player ─────────────────────────────────────────────────────────────
 
+/**
+ * The capsule above the tabs. Tap or swipe up → full player. Swipe left/right
+ * → next/previous. Swipe down or tap ✕ → close the player (with undo).
+ */
 @Composable
-fun MiniPlayer(onOpen: () -> Unit) {
+fun MiniPlayer(onOpen: () -> Unit, onDismiss: () -> Unit) {
     val graph = LocalGraph.current
+    val haptics = LocalHapticFeedback.current
     val ui by graph.player.ui.collectAsState()
     val song = ui.song ?: return
     var dragX by remember { mutableFloatStateOf(0f) }
+    var dragY by remember { mutableFloatStateOf(0f) }
     val progress = if (ui.durationMs > 0) (ui.positionMs.toFloat() / ui.durationMs).coerceIn(0f, 1f) else 0f
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp).clip(RoundedCornerShape(14.dp))
+        shape = RoundedCornerShape(LocalNaadaStyle.current.corner),
+        shadowElevation = 6.dp,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)
+            .graphicsLayer {
+                translationX = dragX
+                translationY = dragY.coerceAtLeast(0f)
+                alpha = 1f - (dragY.coerceAtLeast(0f) / 300f).coerceIn(0f, .7f)
+            }
+            .pointerInput(song.id) {
+                detectDragGestures(
+                    onDragEnd = {
+                        val horizontal = abs(dragX) > abs(dragY)
+                        when {
+                            horizontal && dragX < -150f -> { graph.player.next(); haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                            horizontal && dragX > 150f -> { graph.player.previous(); haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+                            !horizontal && dragY > 120f -> { haptics.performHapticFeedback(HapticFeedbackType.LongPress); onDismiss() }
+                            !horizontal && dragY < -80f -> onOpen()
+                        }
+                        dragX = 0f; dragY = 0f
+                    },
+                    onDragCancel = { dragX = 0f; dragY = 0f },
+                ) { change, d ->
+                    change.consume()
+                    if (abs(dragX) >= abs(dragY)) dragX += d.x
+                    if (abs(dragY) >= abs(dragX)) dragY += d.y
+                }
+            }
     ) {
         Column {
             Row(
-                Modifier.fillMaxWidth().clickable(onClick = onOpen)
-                    .graphicsLayer { translationX = dragX }
-                    .pointerInput(song.id) {
-                        detectHorizontalDragGestures(
-                            onDragEnd = {
-                                if (dragX < -150f) graph.player.next() else if (dragX > 150f) graph.player.previous()
-                                dragX = 0f
-                            },
-                            onDragCancel = { dragX = 0f },
-                        ) { _, d -> dragX += d }
-                    }
-                    .padding(8.dp),
+                Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(start = 8.dp, top = 8.dp, bottom = 8.dp, end = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Artwork(song.image, size = 44.dp, shape = RoundedCornerShape(8.dp))
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                     Text(song.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                IconButton(onClick = graph.player::togglePlay) {
+                IconButton(onClick = graph.player::previous, modifier = Modifier.size(40.dp)) { Icon(Icons.Rounded.SkipPrevious, "Previous") }
+                IconButton(onClick = graph.player::togglePlay, modifier = Modifier.size(44.dp)) {
                     if (ui.buffering && !ui.isPlaying) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
                     else Icon(if (ui.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "Play/pause", modifier = Modifier.size(30.dp))
                 }
-                IconButton(onClick = graph.player::next) { Icon(Icons.Rounded.SkipNext, "Next") }
+                IconButton(onClick = graph.player::next, modifier = Modifier.size(40.dp)) { Icon(Icons.Rounded.SkipNext, "Next") }
+                IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Rounded.Close, "Close player", Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             Box(Modifier.fillMaxWidth().height(2.dp).background(MaterialTheme.colorScheme.outlineVariant)) {
                 Box(Modifier.fillMaxWidth(progress).fillMaxHeight().background(MaterialTheme.colorScheme.primary))

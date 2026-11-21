@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import app as naada  # noqa: E402
 
-SONG = {"id": "abc123", "title": "Samajavaragamana", "type": "song",
+SONG = {"id": "abc123", "title": "Samajavaragamana (From &quot;AVPL&quot;) &amp; more", "type": "song",
         "more_info": {"album": "Ala Vaikunthapurramuloo", "duration": "228",
                       "media_url": "https://aac.saavncdn.com/x/abc_96.mp4",
                       "artistMap": {"primary_artists": [{"name": "Sid Sriram"}]}},
@@ -55,6 +55,7 @@ class V1(unittest.TestCase):
 
     def test_aliases(self):
         j = self.c.get("/api/v1/search?q=sid", headers=H).get_json()
+        self.assertEqual(j["songs"][0]["title"], 'Samajavaragamana (From "AVPL") & more')
         self.assertEqual(j["songs"][0]["id"], "abc123")
         self.assertTrue(j["songs"][0]["url"].endswith("_320.mp4"))
         old = self.c.get("/api/search?q=sid", headers=H).get_json()

@@ -14,9 +14,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.SideEffect
-import androidx.compose.ui.platform.LocalView
-import androidx.core.view.WindowCompat
+import androidx.activity.SystemBarStyle
+import androidx.compose.runtime.DisposableEffect
+import android.graphics.Color as AndroidColor
 import com.adabala.naada.ui.theme.LocalNaadaStyle
 import com.adabala.naada.ui.theme.ThemeChoice
 import androidx.compose.runtime.collectAsState
@@ -95,11 +95,18 @@ class MainActivity : ComponentActivity() {
         val choice = ThemeChoice.of(settings.theme)
         NaadaTheme(choice = choice, accent = if (settings.followArt) art?.vibrant else null) {
             val dark = LocalNaadaStyle.current.dark
-            val view = LocalView.current
-            SideEffect {
-                val c = WindowCompat.getInsetsController(window, view)
-                c.isAppearanceLightStatusBars = !dark
-                c.isAppearanceLightNavigationBars = !dark
+            // Fully transparent system bars, with icon colours that match the
+            // chosen theme (not the phone's light/dark setting). Without this,
+            // 3-button navigation gets a white scrim that ignores the theme.
+            DisposableEffect(dark) {
+                val style = if (dark) SystemBarStyle.dark(AndroidColor.TRANSPARENT)
+                else SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
+                this@MainActivity.enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+                if (Build.VERSION.SDK_INT >= 29) {
+                    window.isNavigationBarContrastEnforced = false
+                    window.isStatusBarContrastEnforced = false
+                }
+                onDispose { }
             }
             NaadaRoot(
                 openPlayer = openPlayer.value, onPlayerOpened = { openPlayer.value = false },

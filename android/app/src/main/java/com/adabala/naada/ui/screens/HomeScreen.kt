@@ -28,6 +28,15 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.AccountCircle
+import androidx.compose.material.icons.rounded.SwitchAccount
+import androidx.compose.material.icons.rounded.PersonAdd
+import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.DownloadForOffline
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -87,6 +96,9 @@ fun HomeScreen() {
     val lang = settings.homeLang
     val home = rememberLoader(lang, settings.serverUrl, settings.token, profiles.active) { graph.api.home(lang) }
     val recent = remember(lib.history) { graph.library.recentSongs(16) }
+    val downloads by graph.playback.downloads.collectAsState()
+    val downloadsCount = downloads.values.count { it.done }
+    var profileMenu by remember { mutableStateOf(false) }
 
     PullToRefreshBox(
         isRefreshing = home.refreshing,
@@ -95,18 +107,19 @@ fun HomeScreen() {
     ) {
         LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
             item {
-                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("నాద", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                        Text(greeting() + (profiles.current?.let { ", ${it.name.substringBefore(' ')}" } ?: ""),
+                        Text("నాద · ${greeting()}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        Text(
+                            profiles.current?.let { "Hi, ${it.name.substringBefore(' ')}" } ?: "What's playing today?",
                             style = MaterialTheme.typography.headlineMedium, maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
                     }
-                    IconButton(onClick = nav::settings) { Icon(Icons.Rounded.Settings, "Settings") }
                     val me = profiles.current
-                    IconButton(onClick = nav::profiles) {
-                        if (me != null) Avatar(me.name, me.color, 34.dp)
-                        else Icon(Icons.Rounded.AccountCircle, "Profiles", Modifier.size(32.dp))
+                    Box(Modifier.clip(CircleShape).clickable { profileMenu = true }.padding(4.dp)) {
+                        if (me != null) Avatar(me.name, me.color, 40.dp)
+                        else Icon(Icons.Rounded.AccountCircle, "Profile & settings", Modifier.size(40.dp))
                     }
                 }
             }
@@ -121,6 +134,7 @@ fun HomeScreen() {
                     }
                 }
             }
+            item { QuickAccess(lib.likes.size, downloadsCount, lib.playlists.take(4)) }
             item { MoodCard(onSubmit = { nav.mood(it) }) }
 
             if (recent.isNotEmpty()) item {
@@ -146,6 +160,99 @@ fun HomeScreen() {
             if (recent.size >= 3) item { TriviaTeaser(onClick = nav::trivia) }
         }
     }
+    if (profileMenu) ProfileMenuSheet(onDismiss = { profileMenu = false })
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProfileMenuSheet(onDismiss: () -> Unit) {
+    val graph = LocalGraph.current
+    val nav = LocalNav.current
+    val profiles by graph.profiles.state.collectAsState()
+    val sync by graph.library.syncState.collectAsState()
+    val me = profiles.current
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.navigationBarsPadding().padding(bottom = 12.dp)) {
+            Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (me != null) Avatar(me.name, me.color, 52.dp)
+                else Icon(Icons.Rounded.AccountCircle, null, Modifier.size(52.dp))
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(me?.name ?: "No profile yet", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        when {
+                            me == null -> "Using the owner's library"
+                            me.isAdmin -> "Owner · " + syncLabel(sync)
+                            else -> syncLabel(sync)
+                        },
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            MenuRow(Icons.Rounded.SwitchAccount, if (profiles.profiles.size > 1) "Switch profile" else "Profiles") { onDismiss(); nav.profiles() }
+            MenuRow(Icons.Rounded.PersonAdd, "Add a profile") { onDismiss(); nav.addProfile() }
+            if (me?.isAdmin == true) MenuRow(Icons.Rounded.Groups, "Family & friends") { onDismiss(); nav.admin() }
+            MenuRow(Icons.Rounded.Settings, "Settings") { onDismiss(); nav.settings() }
+        }
+    }
+}
+
+private fun syncLabel(s: com.adabala.naada.data.SyncState) = when (s) {
+    com.adabala.naada.data.SyncState.Idle -> "Library synced"
+    com.adabala.naada.data.SyncState.Syncing -> "Syncing…"
+    com.adabala.naada.data.SyncState.Offline -> "Offline — will sync later"
+    com.adabala.naada.data.SyncState.Error -> "Sync problem — check Settings"
+}
+
+@Composable
+private fun MenuRow(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 24.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(20.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+/** Spotify-style quick tiles: one tap to your most-used places. */
+@Composable
+private fun QuickAccess(liked: Int, downloads: Int, playlists: List<com.adabala.naada.data.UserPlaylist>) {
+    val nav = LocalNav.current
+    data class Tile(val title: String, val images: List<String>, val icon: androidx.compose.ui.graphics.vector.ImageVector?, val brush: Brush?, val onClick: () -> Unit)
+    val style = LocalNaadaStyle.current
+    val tiles = buildList {
+        add(Tile("Liked songs", emptyList(), Icons.Rounded.Favorite, Brush.linearGradient(style.hero.take(2)), nav::liked))
+        add(Tile(if (downloads > 0) "Downloads · $downloads" else "Downloads", emptyList(), Icons.Rounded.DownloadForOffline,
+            Brush.linearGradient(listOf(Brand.Teal, Brand.Purple)), nav::downloads))
+        playlists.forEach { p -> add(Tile(p.name, p.songs.take(4).map { it.image }, null, null) { nav.userPlaylist(p.id) }) }
+    }
+    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        tiles.chunked(2).forEach { pair ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                pair.forEach { t ->
+                    Row(
+                        Modifier.weight(1f).height(56.dp).clip(RoundedCornerShape(style.corner * 0.6f))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh).clickable(onClick = t.onClick),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (t.icon != null && t.brush != null) {
+                            Box(Modifier.size(56.dp).background(t.brush), contentAlignment = Alignment.Center) {
+                                Icon(t.icon, null, tint = Color.White)
+                            }
+                        } else PlaylistMosaic(t.images, size = 56.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text(t.title, style = MaterialTheme.typography.labelLarge, maxLines = 2,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.padding(end = 8.dp))
+                    }
+                }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+    Spacer(Modifier.height(16.dp))
 }
 
 @Composable

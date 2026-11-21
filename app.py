@@ -1175,6 +1175,30 @@ def log_request():
 # JavaScript stapled to an old page, or an old manifest that quietly breaks
 # installability. Both fail in confusing ways, so we say no-cache out loud.
 # ─────────────────────────────────────────────────────────────────────────
+# JioSaavn returns titles with HTML entities ("From &quot;O.M&quot;", "&amp;").
+# Decode them once here so every client shows clean text.
+import html as _html
+
+def _unescape_tree(v):
+    if isinstance(v, str):
+        return _html.unescape(v) if "&" in v else v
+    if isinstance(v, list):
+        return [_unescape_tree(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _unescape_tree(x) for k, x in v.items()}
+    return v
+
+@app.after_request
+def _clean_entities(resp):
+    if request.path.startswith("/api/") and resp.is_json and resp.status_code < 400:
+        try:
+            raw = resp.get_data(as_text=True)
+            if "&" in raw:
+                resp.set_data(json.dumps(_unescape_tree(json.loads(raw)), ensure_ascii=False))
+        except Exception as e:
+            log.debug(f"entity clean skipped: {e}")
+    return resp
+
 @app.after_request
 def _cache_policy(resp):
     p = request.path
