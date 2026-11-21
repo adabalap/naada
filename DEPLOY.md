@@ -105,3 +105,40 @@ tail -f /opt/naada/logs/naada.log    # app's own rotating log
   no-cache headers by both the app and nginx. If you see stale updates, add a
   Cloudflare Page Rule to bypass cache for `naada.adabala.com/sw.js` and
   `/static/*` during active development.
+
+## Upgrading to v45 — server for the native Android app
+
+v45 adds `api_v1.py` (the API the Android app uses) next to `app.py`. The PWA
+keeps working unchanged.
+
+```bash
+cd /opt/naada
+git fetch origin && git checkout native-app && git pull   # or copy app.py + api_v1.py + static/
+sudo systemctl restart naada
+curl -s http://127.0.0.1:5334/api/v1/info                 # → {"api_version": 1, ...}
+```
+
+- The library (likes, playlists, history) is stored in `/opt/naada/library.db`.
+  The `ubuntu` user must be able to write to `/opt/naada` (it already does if
+  it owns the folder). Back this file up with the rest of the server.
+- **Set a token now.** The API can change your library, so lock it:
+  add `Environment=NAADA_TOKEN=<long random string>` to `deploy/naada.service`,
+  `sudo systemctl daemon-reload && sudo systemctl restart naada`, then enter the
+  same token in the app under Settings, and open the PWA once as
+  `https://naada.adabala.com/?k=<token>` so its cookie is set.
+- To move your PWA library into the app: PWA → About → **Copy library to the
+  Naada app**.
+
+## The Android app
+
+Every push to `android/**` builds a signed APK in GitHub Actions and publishes
+it under **Releases** (`android-v2.0.N`). Install it on the phone from the
+release page; later builds install over it as updates.
+
+- First install: uninstall the old TWA "Naada" app first (different signing key).
+- Builds are signed with `android/app/naada-sideload.jks`, which is committed so
+  every CI build can update the last one. Because the repo is public, anyone
+  could sign an APK with it — only install Naada from your own Releases page.
+  To switch to a private key, add repository secrets `NAADA_KEYSTORE_BASE64`,
+  `NAADA_KEYSTORE_PASSWORD`, `NAADA_KEY_ALIAS`, `NAADA_KEY_PASSWORD`
+  (switching keys means one uninstall/reinstall).
