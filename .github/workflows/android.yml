@@ -63,7 +63,7 @@ jobs:
         run: |
           # Surface Kotlin / Gradle errors as one annotation so they're readable from the API.
           LOG="$RUNNER_TEMP/build.log"
-          ERRS=$( (grep -E '^e: |error:|What went wrong|^> ' "$LOG" || true) | head -80 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+          ERRS=$( (grep -E '^e: |error:|What went wrong' -A2 "$LOG" | grep -v '^> Task' || true) | head -80 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
           echo "::error title=Build failed::${ERRS:-see log}"
 
       - name: Rename APK
