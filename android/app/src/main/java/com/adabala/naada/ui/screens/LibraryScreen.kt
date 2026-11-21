@@ -57,6 +57,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.adabala.naada.data.SyncState
 import com.adabala.naada.ui.LocalGraph
+import com.adabala.naada.ui.components.ScrollToTopButton
 import com.adabala.naada.ui.LocalNav
 import com.adabala.naada.ui.components.Artwork
 import com.adabala.naada.ui.theme.Brand
@@ -164,7 +165,7 @@ fun LibraryScreen() {
                 }
             }
         }
-        com.adabala.naada.ui.components.ScrollToTopButton(listState, tab = "library")
+        ScrollToTopButton(listState, tab = "library")
     }
 
     if (creating) {

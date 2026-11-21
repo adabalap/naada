@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import com.adabala.naada.BuildConfig
 import com.adabala.naada.data.ApiException
 import com.adabala.naada.ui.LocalGraph
+import com.adabala.naada.ui.components.ScrollToTopButton
 import com.adabala.naada.ui.LocalNav
 import com.adabala.naada.ui.components.Load
 import com.adabala.naada.ui.components.LoadingBox
@@ -313,7 +314,7 @@ fun TriviaScreen() {
                                 modifier = Modifier.padding(20.dp))
                         }
                     }
-                    com.adabala.naada.ui.components.ScrollToTopButton(listState, tab = "trivia")
+                    ScrollToTopButton(listState, tab = "trivia")
                 }
             }
         }
