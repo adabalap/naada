@@ -32,7 +32,7 @@ from datetime import date
 from flask import Blueprint, Response, g, jsonify, request
 
 API_VERSION = 1
-SERVER_VERSION = "46.0"
+SERVER_VERSION = "47.0"
 HISTORY_CAP = 1000          # rows kept per person
 HISTORY_RETURN = 200        # rows returned by GET /library
 OWNER_ID = "owner"
@@ -597,7 +597,10 @@ def _library_payload(conn, uid):
                for r in conn.execute(
                    "SELECT song_json, played_at FROM history WHERE user_id=? "
                    "ORDER BY played_at DESC LIMIT ?", (uid, HISTORY_RETURN))]
-    return {"rev": _rev(conn, uid), "likes": likes, "playlists": playlists, "history": history}
+    row = conn.execute("SELECT v FROM meta WHERE k=?", ("folders:" + uid,)).fetchone()
+    folders = json.loads(row["v"]) if row else []
+    return {"rev": _rev(conn, uid), "likes": likes, "playlists": playlists, "history": history,
+            "folders": folders}
 
 
 @bp.route("/library")
@@ -760,6 +763,43 @@ def clear_history():
     return jsonify({"rev": rev})
 
 
+def _clean_folders(raw):
+    """Folders group playlists (by id) and loose songs (remembering which
+    playlist each came from, so deleting a folder can put them back)."""
+    out = []
+    for f in (raw or [])[:200]:
+        if not isinstance(f, dict) or not str(f.get("id", "")).strip():
+            continue
+        songs = []
+        for it in (f.get("songs") or [])[:1000]:
+            if isinstance(it, dict):
+                c = _clean_song(it.get("song"))
+                if c:
+                    songs.append({"song": c, "from": str(it.get("from") or "")[:64] or None})
+        out.append({
+            "id": str(f["id"])[:64],
+            "name": str(f.get("name", "")).strip()[:120] or "Folder",
+            "playlist_ids": [str(x)[:64] for x in (f.get("playlist_ids") or [])][:500],
+            "songs": songs,
+            "updated_at": float(f.get("updated_at") or time.time()),
+        })
+    return out
+
+
+@bp.route("/library/folders", methods=["PUT"])
+def put_folders():
+    err = _need_user()
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    conn, uid = _db(), _uid()
+    with conn:
+        conn.execute("INSERT OR REPLACE INTO meta(k, v) VALUES(?, ?)",
+                     ("folders:" + uid, json.dumps(_clean_folders(body.get("folders")))))
+        rev = _bump_rev(conn, uid)
+    return jsonify({"rev": rev})
+
+
 @bp.route("/library/import", methods=["POST"])
 def import_library():
     """Merge a PWA export or a backup file into this person's library.
@@ -790,6 +830,12 @@ def import_library():
             _write_playlist_songs(conn, pid, p.get("songs"))
             n_pl += 1
         n_hist = _add_history(conn, uid, body.get("history"))
+        if body.get("folders"):
+            row = conn.execute("SELECT v FROM meta WHERE k=?", ("folders:" + uid,)).fetchone()
+            have = json.loads(row["v"]) if row else []
+            ids = {f["id"] for f in have}
+            merged = have + [f for f in _clean_folders(body.get("folders")) if f["id"] not in ids]
+            conn.execute("INSERT OR REPLACE INTO meta(k, v) VALUES(?, ?)", ("folders:" + uid, json.dumps(merged)))
         rev = _bump_rev(conn, uid)
     return jsonify({"rev": rev, "likes": n_likes, "playlists": n_pl, "history": n_hist})
 

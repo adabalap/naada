@@ -148,6 +148,11 @@ class NaadaApi(private val settings: SettingsStore, private val profiles: Profil
         return send("library/history", "POST", body, ser())
     }
 
+    suspend fun putFolders(folders: List<Folder>): RevResponse {
+        val body = NaadaJson.encodeToString(FoldersBody.serializer(), FoldersBody(folders))
+        return send("library/folders", "PUT", body, ser())
+    }
+
     suspend fun clearHistory(): RevResponse = send("library/history", "DELETE", "{}", ser())
 
     /** Merge a backup file into the server library (nothing is deleted). */
@@ -203,6 +208,7 @@ class NaadaApi(private val settings: SettingsStore, private val profiles: Profil
     suspend fun removeUser(id: String) { send("admin/users/$id", "DELETE", "{}", JsonObject.serializer()) }
     suspend fun cancelInvite(code: String) { send("admin/invites/$code", "DELETE", "{}", JsonObject.serializer()) }
 
+    @Serializable private data class FoldersBody(val folders: List<Folder>)
     @Serializable private data class ShareBody(val name: String, val songs: List<Song>)
     @Serializable private data class TriviaBody(val songs: List<Song>)
     @Serializable private data class PlaylistBody(val id: String, val name: String, val songs: List<Song>)

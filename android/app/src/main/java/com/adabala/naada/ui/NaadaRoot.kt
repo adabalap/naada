@@ -65,6 +65,7 @@ import com.adabala.naada.ui.screens.SearchScreen
 import com.adabala.naada.ui.screens.SettingsScreen
 import com.adabala.naada.ui.screens.SharedPlaylistScreen
 import com.adabala.naada.ui.screens.ProfilesScreen
+import com.adabala.naada.ui.screens.FolderScreen
 import com.adabala.naada.ui.screens.AddProfileScreen
 import com.adabala.naada.ui.screens.AdminScreen
 import com.adabala.naada.ui.screens.TriviaScreen
@@ -165,6 +166,7 @@ fun NaadaRoot(
                             composable("trivia") { TriviaScreen() }
                             composable("shared/{id}") { SharedPlaylistScreen(it.arg("id")) }
                             composable("profiles") { ProfilesScreen() }
+                            composable("folder/{id}") { FolderScreen(it.arg("id")) }
                             composable("addprofile") { AddProfileScreen() }
                             composable("admin") { AdminScreen() }
                         }

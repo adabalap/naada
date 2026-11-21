@@ -147,7 +147,8 @@ fun HomeScreen() {
                 }
             }
         }
-        ScrollToTopButton(listState, tab = "home")
+        // Home has only a handful of (tall) sections, so show ↑ after the first two.
+        ScrollToTopButton(listState, tab = "home", afterItems = 2)
     }
     if (profileMenu) ProfileMenuSheet(onDismiss = { profileMenu = false })
 }

@@ -58,9 +58,9 @@ private fun BoxScope.TopButton(visible: Boolean, onClick: () -> Unit) {
 
 /** A floating ↑ that appears once you've scrolled a screen or two down. */
 @Composable
-fun BoxScope.ScrollToTopButton(state: LazyListState, tab: String? = null) {
+fun BoxScope.ScrollToTopButton(state: LazyListState, tab: String? = null, afterItems: Int = 4) {
     val scope = rememberCoroutineScope()
-    val show by remember { derivedStateOf { state.firstVisibleItemIndex > 4 } }
+    val show by remember(afterItems) { derivedStateOf { state.firstVisibleItemIndex >= afterItems } }
     TopButton(show) { scope.launch { state.animateScrollToItem(0) } }
     if (tab != null) ScrollToTopOnReselect(tab) { state.animateScrollToItem(0) }
 }

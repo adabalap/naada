@@ -96,6 +96,25 @@ class V1(unittest.TestCase):
         self.assertFalse(any(p["id"] == pid for p in lib["playlists"]))
         self.assertFalse(any(s["id"] == "abc123" for s in lib["likes"]))
 
+    def test_folders(self):
+        folders = [{"id": "f1", "name": "Chiranjeevi", "playlist_ids": ["p1", "p2"],
+                    "songs": [{"song": {"id": "s9", "title": "Abbanee"}, "from": "p3"}, {"song": {"bad": 1}}]}]
+        self.assertEqual(self.c.put("/api/v1/library/folders", json={"folders": folders}, headers=H).status_code, 200)
+        lib = self.c.get("/api/v1/library", headers=H).get_json()
+        f = lib["folders"][0]
+        self.assertEqual((f["name"], f["playlist_ids"], len(f["songs"]), f["songs"][0]["from"]), ("Chiranjeevi", ["p1", "p2"], 1, "p3"))
+        self.c.put("/api/v1/library/folders", json={"folders": []}, headers=H)
+        self.assertEqual(self.c.get("/api/v1/library", headers=H).get_json()["folders"], [])
+
+    def test_new_releases_ids(self):
+        old = naada.saavn
+        naada.saavn = lambda p, timeout=12: {"data": [{"id": "a1", "title": "One"}, {"albumid": "a2", "title": "Two"}, {"title": "no id"}]}
+        try:
+            albums = self.c.get("/api/v1/new-releases?lang=telugu", headers=H).get_json()["albums"]
+        finally:
+            naada.saavn = old
+        self.assertEqual([a["id"] for a in albums], ["a1", "a2"])
+
     def test_import(self):
         body = {"likes": [{"id": "s1", "title": "A"}, {"bad": 1}],
                 "playlists": [{"name": "Old", "songs": [{"id": "s2"}]}],

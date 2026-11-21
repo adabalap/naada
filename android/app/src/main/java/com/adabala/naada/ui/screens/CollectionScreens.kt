@@ -29,6 +29,9 @@ import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.LibraryAdd
+import androidx.compose.material.icons.rounded.DriveFileMove
+import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material3.AlertDialog
@@ -93,6 +96,9 @@ fun CollectionScaffold(
     headerActions: @Composable () -> Unit = {},
     topActions: @Composable () -> Unit = {},
     footer: @Composable () -> Unit = {},
+    mosaicImages: List<String>? = null,
+    folderId: String? = null,
+    beforeSongs: @Composable () -> Unit = {},
 ) {
     val graph = LocalGraph.current
     val nav = LocalNav.current
@@ -122,7 +128,8 @@ fun CollectionScaffold(
                     if (songs.isNotEmpty()) IconButton(onClick = { sharing = true }) { Icon(Icons.Rounded.Share, "Share") }
                 }
                 Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    if (mosaic) PlaylistMosaic(songs.take(4).map { it.image }, size = 200.dp)
+                    if (mosaicImages != null) PlaylistMosaic(mosaicImages, size = 200.dp, mixed = true)
+                    else if (mosaic) PlaylistMosaic(songs.map { it.image }, size = 200.dp)
                     else Artwork(
                         image.ifEmpty { songs.firstOrNull()?.image.orEmpty() }, size = 220.dp,
                         shape = if (circleArt) CircleShape else RoundedCornerShape(16.dp)
@@ -162,6 +169,7 @@ fun CollectionScaffold(
                 }
             }
         }
+        item { beforeSongs() }
         if (songs.isEmpty()) item { MessageBox(emptyTitle, emptyBody, icon = emptyIcon) }
         itemsIndexed(songs) { i, s ->
             SongRow(
@@ -175,7 +183,7 @@ fun CollectionScaffold(
     ScrollToTopButton(listState)
     }
 
-    actionFor?.let { s -> SongActionsSheet(s, onDismiss = { actionFor = null }, fromUserPlaylist = userPlaylistId) }
+    actionFor?.let { s -> SongActionsSheet(s, onDismiss = { actionFor = null }, fromUserPlaylist = userPlaylistId, fromFolder = folderId) }
     if (sharing) ShareSheet(title, songs, onDismiss = { sharing = false })
 }
 
@@ -199,8 +207,15 @@ private fun <T> Loaded(state: Load<T>, retry: () -> Unit, content: @Composable (
 fun AlbumScreen(id: String) {
     val graph = LocalGraph.current
     val l = rememberLoader(id) { graph.api.album(id) }
+    val context = LocalContext.current
     Loaded(l.state, l.reload) { a: Album ->
-        CollectionScaffold(a.title, listOf(a.artist, a.year).filter { it.isNotBlank() }.joinToString(" · "), a.image, a.songs, numbered = true)
+        CollectionScaffold(a.title, listOf(a.artist, a.year).filter { it.isNotBlank() }.joinToString(" · "), a.image, a.songs, numbered = true,
+            headerActions = {
+                FilledTonalIconButton(onClick = {
+                    graph.library.createPlaylist(a.title, a.songs)
+                    toast(context, "Saved “${a.title}” to your library")
+                }) { Icon(Icons.Rounded.LibraryAdd, "Save album to library") }
+            })
     }
 }
 
@@ -341,6 +356,8 @@ fun UserPlaylistScreen(id: String) {
     val pl = lib.playlists.firstOrNull { it.id == id }
     var renaming by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf(false) }
+    var moving by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     if (pl == null) {
         Box(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -352,10 +369,17 @@ fun UserPlaylistScreen(id: String) {
         pl.name, "${pl.songs.size} songs", "", pl.songs, mosaic = true, userPlaylistId = id,
         emptyTitle = "Empty playlist", emptyBody = "Add songs from any song's ⋮ menu.",
         topActions = {
+            IconButton(onClick = { moving = true }) { Icon(Icons.Rounded.DriveFileMove, "Move to folder") }
+            if (pl.songs.isEmpty()) IconButton(onClick = {
+                graph.library.convertPlaylistToFolder(id)?.let { fid -> nav.back(); nav.folder(fid) }
+            }) { Icon(Icons.Rounded.CreateNewFolder, "Turn into a folder") }
             IconButton(onClick = { renaming = true }) { Icon(Icons.Rounded.Edit, "Rename") }
             IconButton(onClick = { deleting = true }) { Icon(Icons.Rounded.Delete, "Delete") }
         },
     )
+    if (moving) MoveToFolderDialog("Move “${pl.name}” to…", onDismiss = { moving = false }) { fid ->
+        graph.library.movePlaylistToFolder(id, fid); moving = false; toast(context, "Moved")
+    }
     if (renaming) NameDialog("Rename playlist", pl.name, onDismiss = { renaming = false }) {
         graph.library.renamePlaylist(id, it); renaming = false
     }

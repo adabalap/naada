@@ -22,6 +22,8 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.DriveFileMove
+import androidx.compose.material.icons.rounded.FolderOff
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -59,6 +61,7 @@ fun SongActionsSheet(
     song: Song,
     onDismiss: () -> Unit,
     fromUserPlaylist: String? = null,
+    fromFolder: String? = null,
 ) {
     val graph = LocalGraph.current
     val nav = LocalNav.current
@@ -70,6 +73,8 @@ fun SongActionsSheet(
     val dl = downloads[song.id]
     var pickPlaylist by remember { mutableStateOf(false) }
     var sharing by remember { mutableStateOf(false) }
+    var toFolder by remember { mutableStateOf(false) }
+    val inFolderLoose = fromFolder != null && lib.folders.firstOrNull { it.id == fromFolder }?.songs?.any { it.song.id == song.id } == true
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
@@ -91,6 +96,10 @@ fun SongActionsSheet(
                 close { graph.library.toggleLike(song) }
             }
             Action(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add to playlist") { pickPlaylist = true }
+            Action(Icons.Rounded.DriveFileMove, if (fromUserPlaylist != null) "Move to folder…" else "Add to folder…") { toFolder = true }
+            if (inFolderLoose) Action(Icons.Rounded.FolderOff, "Take out of folder") {
+                close { graph.library.removeSongFromFolder(fromFolder!!, song.id); toast(context, "Back where it came from") }
+            }
             when {
                 dl?.done == true -> Action(Icons.Rounded.Delete, "Remove download") { close { graph.player.removeDownload(song.id) } }
                 dl?.active == true -> Action(Icons.Rounded.Download, "Downloading… ${dl.percent.toInt().coerceAtLeast(0)}%") {}
@@ -113,6 +122,17 @@ fun SongActionsSheet(
         }
     }
 
+    if (toFolder) {
+        com.adabala.naada.ui.screens.MoveToFolderDialog(
+            if (fromUserPlaylist != null) "Move “${song.title}” to…" else "Add “${song.title}” to…",
+            onDismiss = { toFolder = false }
+        ) { fid ->
+            graph.library.addSongToFolder(fid, song, fromUserPlaylist)
+            toast(context, if (fromUserPlaylist != null) "Moved to folder" else "Added to folder")
+            toFolder = false
+            onDismiss()
+        }
+    }
     if (sharing) {
         ShareSheet(song.title, listOf(song)) { sharing = false; onDismiss() }
     }

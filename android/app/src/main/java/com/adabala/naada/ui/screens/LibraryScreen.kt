@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.rounded.DownloadForOffline
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material3.AlertDialog
@@ -78,6 +80,12 @@ fun LibraryScreen() {
     var creating by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    var newMenu by remember { mutableStateOf(false) }
+    var creatingFolder by remember { mutableStateOf(false) }
+    // Folders first, then playlists that aren't inside a folder.
+    val inFolders = remember(lib.folders) { lib.folders.flatMap { it.playlistIds }.toSet() }
+    val topPlaylists = lib.playlists.filter { it.id !in inFolders }
+    val entries: List<LibItem> = lib.folders.map { LibItem.F(it) } + topPlaylists.map { LibItem.P(it) }
 
     PullToRefreshBox(
         isRefreshing = refreshing,
@@ -97,7 +105,19 @@ fun LibraryScreen() {
                     IconButton(onClick = { graph.library.scheduleSync() }) {
                         Icon(icon, desc, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    IconButton(onClick = { creating = true }) { Icon(Icons.Rounded.Add, "New playlist") }
+                    Box {
+                        IconButton(onClick = { newMenu = true }) { Icon(Icons.Rounded.Add, "New playlist or folder") }
+                        androidx.compose.material3.DropdownMenu(expanded = newMenu, onDismissRequest = { newMenu = false }) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("New playlist") },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.QueueMusic, null) },
+                                onClick = { newMenu = false; creating = true })
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("New folder") },
+                                leadingIcon = { Icon(Icons.Rounded.CreateNewFolder, null) },
+                                onClick = { newMenu = false; creatingFolder = true })
+                        }
+                    }
                 }
             }
             item {
@@ -127,47 +147,35 @@ fun LibraryScreen() {
                             if (grid) "Show as list" else "Show as tiles")
                     }
                 }
+                if (lib.folders.isNotEmpty() && topPlaylists.isNotEmpty()) Text(
+                    "Tip: long-press a playlist and drop it on a folder.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 20.dp)
+                )
             }
-            if (lib.playlists.isEmpty()) item {
+            if (entries.isEmpty()) item {
                 Text(
-                    "Create playlists here or from any song's ⋮ menu. They sync to your server, so they're safe across phones.",
+                    "Create playlists and folders with +, or from any song's ⋮ menu. They sync to your server, so they're safe across phones.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
                 )
             }
-            if (grid) items(lib.playlists.chunked(2)) { pair ->
+            if (grid) items(entries.chunked(2)) { pair ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    pair.forEach { p ->
-                        Column(
-                            Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).clickable { nav.userPlaylist(p.id) }.padding(6.dp)
-                        ) {
-                            BoxWithConstraints(Modifier.fillMaxWidth()) {
-                                PlaylistMosaic(p.songs.take(4).map { it.image }, size = maxWidth)
-                            }
-                            Spacer(Modifier.height(8.dp))
-                            Text(p.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text("${p.songs.size} songs", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
+                    pair.forEach { item -> LibraryEntry(item, grid = true, modifier = Modifier.weight(1f)) }
                     if (pair.size == 1) Spacer(Modifier.weight(1f))
                 }
-            } else items(lib.playlists) { p ->
-                Row(
-                    Modifier.fillMaxWidth().clickable { nav.userPlaylist(p.id) }.padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    PlaylistMosaic(p.songs.take(4).map { it.image })
-                    Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(p.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("${p.songs.size} songs", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
+            } else items(entries) { item -> LibraryEntry(item, grid = false) }
         }
         ScrollToTopButton(listState, tab = "library")
     }
 
+    if (creatingFolder) {
+        NameDialog("New folder", "", onDismiss = { creatingFolder = false }) { name ->
+            graph.library.createFolder(name)
+            creatingFolder = false
+        }
+    }
     if (creating) {
         NameDialog("New playlist", "", onDismiss = { creating = false }) { name ->
             val id = graph.library.createPlaylist(name)
@@ -189,24 +197,43 @@ private fun QuickTile(title: String, subtitle: String, icon: ImageVector, brush:
     }
 }
 
+/**
+ * Cover for a playlist or folder. Playlists: four different covers → 2×2,
+ * otherwise one cover. Folders ([mixed]): every album inside gets a share —
+ * 2 side by side, 3 as one big + two small, 4 as 2×2.
+ */
 @Composable
-fun PlaylistMosaic(images: List<String>, size: androidx.compose.ui.unit.Dp = 56.dp) {
-    // A 2×2 grid only when there are four different covers; otherwise one cover
-    // (a playlist from a single album shouldn't show the same art four times).
+fun PlaylistMosaic(images: List<String>, size: androidx.compose.ui.unit.Dp = 56.dp, mixed: Boolean = false) {
     val distinct = images.filter { it.isNotBlank() }.distinct()
-    val images = if (distinct.size >= 4) distinct.take(4) else distinct.take(1)
+    val imgs = when {
+        mixed -> distinct.take(4)
+        distinct.size >= 4 -> distinct.take(4)
+        else -> distinct.take(1)
+    }
+    val sq = RoundedCornerShape(0.dp)
     Box(Modifier.size(size).clip(RoundedCornerShape(LocalNaadaStyle.current.corner * 0.7f)).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
-        when {
-            images.isEmpty() -> Icon(Icons.AutoMirrored.Rounded.QueueMusic, null, Modifier.align(Alignment.Center), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            images.size < 4 -> Artwork(images[0], Modifier.fillMaxSize(), shape = RoundedCornerShape(0.dp))
-            else -> Column {
+        when (imgs.size) {
+            0 -> Icon(Icons.AutoMirrored.Rounded.QueueMusic, null, Modifier.align(Alignment.Center), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            1 -> Artwork(imgs[0], Modifier.fillMaxSize(), shape = sq)
+            2 -> Row(Modifier.fillMaxSize()) {
+                Artwork(imgs[0], Modifier.weight(1f).fillMaxHeight(), shape = sq)
+                Artwork(imgs[1], Modifier.weight(1f).fillMaxHeight(), shape = sq)
+            }
+            3 -> Row(Modifier.fillMaxSize()) {
+                Artwork(imgs[0], Modifier.weight(1f).fillMaxHeight(), shape = sq)
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    Artwork(imgs[1], Modifier.weight(1f).fillMaxWidth(), shape = sq)
+                    Artwork(imgs[2], Modifier.weight(1f).fillMaxWidth(), shape = sq)
+                }
+            }
+            else -> Column(Modifier.fillMaxSize()) {
                 Row(Modifier.weight(1f)) {
-                    Artwork(images[0], Modifier.weight(1f).fillMaxSize(), shape = RoundedCornerShape(0.dp))
-                    Artwork(images[1], Modifier.weight(1f).fillMaxSize(), shape = RoundedCornerShape(0.dp))
+                    Artwork(imgs[0], Modifier.weight(1f).fillMaxSize(), shape = sq)
+                    Artwork(imgs[1], Modifier.weight(1f).fillMaxSize(), shape = sq)
                 }
                 Row(Modifier.weight(1f)) {
-                    Artwork(images[2], Modifier.weight(1f).fillMaxSize(), shape = RoundedCornerShape(0.dp))
-                    Artwork(images[3], Modifier.weight(1f).fillMaxSize(), shape = RoundedCornerShape(0.dp))
+                    Artwork(imgs[2], Modifier.weight(1f).fillMaxSize(), shape = sq)
+                    Artwork(imgs[3], Modifier.weight(1f).fillMaxSize(), shape = sq)
                 }
             }
         }

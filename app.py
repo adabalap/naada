@@ -544,12 +544,10 @@ def trending(lang):
 def new_releases():
     lang = request.args.get("lang","hindi")
     log.info(f"New releases lang={lang}")
-    d = saavn({"__call":"content.getAlbums","n":"20","p":"1","language":lang})
-    albums = [{"id":a.get("albumid",""),"title":a.get("title",""),
-               "artist":a.get("music",""),"image":hi_res(a.get("image","")),
-               "year":a.get("year",""),"language":a.get("language","")}
-              for a in d.get("data",[])]
-    return jsonify({"albums":albums})
+    # Same parser as the Home shelf: JioSaavn puts the id in "albumid" OR "id"
+    # depending on the album; reading only "albumid" left most ids blank.
+    d = saavn({"__call":"content.getAlbums","n":"40","p":"1","language":lang})
+    return jsonify({"albums": _albums_from_response(d)})
 
 # ── Featured playlists (curated shelves) ───────────────────────────────────
 @app.route("/api/featured")
@@ -582,11 +580,7 @@ def movies():
     log.info(f"Movie songs lang={lang}")
     # content.getAlbums returns film albums newest-first for most languages
     d = saavn({"__call":"content.getAlbums","n":"25","p":"1","language":lang})
-    albums = [{"id":a.get("albumid",""),"title":a.get("title",""),
-               "artist":a.get("music",""),"image":hi_res(a.get("image","")),
-               "year":a.get("year",""),"language":a.get("language","")}
-              for a in d.get("data",[]) if a.get("albumid")]
-    return jsonify({"albums":albums})
+    return jsonify({"albums": _albums_from_response(d)})
 
 # ── Unified home shelves — one call powers the whole landing page ──────────
 @app.route("/api/home/<lang>")

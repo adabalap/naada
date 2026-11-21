@@ -126,8 +126,106 @@ class LibraryRepository(
     fun removeFromPlaylist(id: String, songId: String) =
         updatePlaylist(id) { p -> p.copy(songs = p.songs.filter { it.id != songId }) }
 
-    fun deletePlaylist(id: String) = mutate(PendingOp("pl_delete", id)) { d ->
-        d.copy(playlists = d.playlists.filter { it.id != id })
+    fun deletePlaylist(id: String) {
+        mutate(PendingOp("pl_delete", id)) { d ->
+            d.copy(playlists = d.playlists.filter { it.id != id })
+        }
+        if (library.value.folders.any { id in it.playlistIds }) editFolders { fs ->
+            fs.map { f -> f.copy(playlistIds = f.playlistIds - id) }
+        }
+    }
+
+    // ── Folders ────────────────────────────────────────────────────────────
+    fun folder(id: String): Folder? = library.value.folders.firstOrNull { it.id == id }
+    fun folderOf(playlistId: String): Folder? = library.value.folders.firstOrNull { playlistId in it.playlistIds }
+
+    private fun editFolders(f: (List<Folder>) -> List<Folder>) =
+        mutate(PendingOp("folders")) { d -> d.copy(folders = f(d.folders)) }
+
+    private fun touch(f: Folder) = f.copy(updatedAt = now())
+
+    fun createFolder(name: String, playlistIds: List<String> = emptyList(), songs: List<FolderSong> = emptyList()): String {
+        val id = "f-" + UUID.randomUUID().toString().take(12)
+        editFolders { fs ->
+            val moved = fs.map { it.copy(playlistIds = it.playlistIds - playlistIds.toSet()) }
+            listOf(Folder(id, name.trim(), playlistIds, songs, now())) + moved
+        }
+        return id
+    }
+
+    fun renameFolder(id: String, name: String) = editFolders { fs -> fs.map { if (it.id == id) touch(it.copy(name = name.trim())) else it } }
+
+    /** A playlist lives in at most one folder. */
+    fun movePlaylistToFolder(playlistId: String, folderId: String) = editFolders { fs ->
+        fs.map { f ->
+            when (f.id) {
+                folderId -> touch(f.copy(playlistIds = (f.playlistIds - playlistId) + playlistId))
+                else -> if (playlistId in f.playlistIds) touch(f.copy(playlistIds = f.playlistIds - playlistId)) else f
+            }
+        }
+    }
+
+    fun removePlaylistFromFolder(playlistId: String) = editFolders { fs ->
+        fs.map { if (playlistId in it.playlistIds) touch(it.copy(playlistIds = it.playlistIds - playlistId)) else it }
+    }
+
+    /** Move a song into a folder. If it came from one of your playlists, it leaves that playlist. */
+    fun addSongToFolder(folderId: String, song: Song, fromPlaylist: String?) {
+        val from = fromPlaylist?.takeIf { playlist(it) != null }
+        if (from != null) removeFromPlaylist(from, song.id)
+        editFolders { fs ->
+            fs.map { f ->
+                if (f.id != folderId || f.songs.any { it.song.id == song.id }) f
+                else touch(f.copy(songs = f.songs + FolderSong(song.forStorage(), from)))
+            }
+        }
+    }
+
+    /** Take a song out of a folder and put it back where it came from (if anywhere). */
+    fun removeSongFromFolder(folderId: String, songId: String) {
+        val f = folder(folderId) ?: return
+        val fs = f.songs.firstOrNull { it.song.id == songId } ?: return
+        fs.from?.let { if (playlist(it) != null) addToPlaylist(it, listOf(fs.song)) }
+        editFolders { list -> list.map { if (it.id == folderId) touch(it.copy(songs = it.songs.filter { s -> s.song.id != songId })) else it } }
+    }
+
+    /**
+     * Delete only the folder: its playlists return to the main list, and each
+     * moved song returns to the playlist it came from. Songs with nowhere to go
+     * are kept in a new playlist with the folder's name — nothing is lost.
+     */
+    fun deleteFolder(folderId: String): Int {
+        val f = folder(folderId) ?: return 0
+        val orphans = mutableListOf<Song>()
+        f.songs.groupBy { it.from }.forEach { (from, items) ->
+            if (from != null && playlist(from) != null) addToPlaylist(from, items.map { it.song })
+            else orphans += items.map { it.song }
+        }
+        if (orphans.isNotEmpty()) createPlaylist(f.name, orphans)
+        editFolders { list -> list.filter { it.id != folderId } }
+        return orphans.size
+    }
+
+    /** Turn a playlist into a folder (its songs become the folder's songs). */
+    fun convertPlaylistToFolder(playlistId: String): String? {
+        val p = playlist(playlistId) ?: return null
+        val id = createFolder(p.name, songs = p.songs.map { FolderSong(it, null) })
+        mutate(PendingOp("pl_delete", playlistId)) { d -> d.copy(playlists = d.playlists.filter { it.id != playlistId }) }
+        return id
+    }
+
+    /** Every song a folder can play: its playlists' songs, then its own. */
+    fun folderSongs(f: Folder): List<Song> {
+        val pls = library.value.playlists
+        return (f.playlistIds.mapNotNull { id -> pls.firstOrNull { it.id == id } }.flatMap { it.songs } + f.songs.map { it.song })
+            .distinctBy { it.id }
+    }
+
+    /** Cover art for a folder: one image per album inside, mixed. */
+    fun folderImages(f: Folder): List<String> {
+        val pls = library.value.playlists
+        val fromPlaylists = f.playlistIds.mapNotNull { id -> pls.firstOrNull { it.id == id }?.songs?.firstOrNull()?.image }
+        return (fromPlaylists + f.songs.map { it.song.image }).filter { it.isNotBlank() }.distinct()
     }
 
     // ── History ────────────────────────────────────────────────────────────
@@ -203,6 +301,14 @@ class LibraryRepository(
                 "pl_upsert" -> api.upsertPlaylist(op.id, op.name ?: "Playlist", op.songs ?: emptyList())
                 "pl_delete" -> api.deletePlaylist(op.id)
                 "history_clear" -> api.clearHistory()
+                "folders" -> {
+                    // Folders are sent whole; one upload covers every queued change.
+                    api.putFolders(_local.value.data.folders)
+                    _local.update { cur ->
+                        val next = cur.copy(pending = cur.pending.filter { it.kind != "folders" }); persist(next); next
+                    }
+                    continue
+                }
                 "history" -> {
                     // Batch consecutive history ops into one upload.
                     val batch = _local.value.pending.takeWhile { it.kind == "history" }

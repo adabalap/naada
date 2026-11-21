@@ -54,6 +54,7 @@ class Nav(private val nc: NavHostController) {
     fun featured(lang: String) = go("featured/$lang")
     fun shared(id: String) = go("shared/${Uri.encode(id)}")
     fun profiles() = go("profiles")
+    fun folder(id: String) = go("folder/${Uri.encode(id)}")
     fun addProfile() = go("addprofile")
     fun admin() = go("admin")
     fun home() { nc.navigate("home") { popUpTo("home") { inclusive = false }; launchSingleTop = true } }

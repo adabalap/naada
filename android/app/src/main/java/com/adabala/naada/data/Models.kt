@@ -123,12 +123,27 @@ data class HistoryItem(
     @SerialName("played_at") val playedAt: Double,
 )
 
+/** A song placed in a folder; `from` is the playlist it was moved out of. */
+@Serializable
+data class FolderSong(val song: Song, val from: String? = null)
+
+/** Groups playlists (by id) and loose songs. Deleting it puts everything back. */
+@Serializable
+data class Folder(
+    val id: String,
+    val name: String,
+    @SerialName("playlist_ids") val playlistIds: List<String> = emptyList(),
+    val songs: List<FolderSong> = emptyList(),
+    @SerialName("updated_at") val updatedAt: Double = 0.0,
+)
+
 @Serializable
 data class LibraryData(
     val rev: Long = 0,
     val likes: List<Song> = emptyList(),
     val playlists: List<UserPlaylist> = emptyList(),
     val history: List<HistoryItem> = emptyList(),
+    val folders: List<Folder> = emptyList(),
     val unchanged: Boolean = false,
 )
 

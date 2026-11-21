@@ -74,7 +74,7 @@ fun NewReleasesScreen(lang: String) {
     val graph = LocalGraph.current
     val nav = LocalNav.current
     val l = rememberLoader(lang) {
-        graph.api.newReleases(lang).albums.distinctBy { it.id }
+        graph.api.newReleases(lang).albums.filter { it.id.isNotBlank() }.distinctBy { it.id }
             .map { a -> Cover(a.title, listOf(a.artist, a.year).filter { it.isNotBlank() }.joinToString(" · "), a.image) { nav.album(a.id) } }
     }
     CoverGridPage("New releases", langName(lang), l.state, l.reload)
@@ -85,7 +85,7 @@ fun FeaturedPlaylistsScreen(lang: String) {
     val graph = LocalGraph.current
     val nav = LocalNav.current
     val l = rememberLoader(lang) {
-        graph.api.featured(lang).playlists.distinctBy { it.id }
+        graph.api.featured(lang).playlists.filter { it.id.isNotBlank() }.distinctBy { it.id }
             .map { p -> Cover(p.title, if (p.count.isNotBlank()) "${p.count} songs" else "", p.image) { nav.playlist(p.id) } }
     }
     CoverGridPage("Curated playlists", langName(lang), l.state, l.reload)
