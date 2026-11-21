@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Naada (నాద) — app.js  ·  Production music player
 ═══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION = "v42";
+const APP_VERSION = "v44";
 
 /* ── Lightweight diagnostics ─────────────────────────────────────────────
    ndlog() is a no-op stub (kept so the inline trace calls are harmless).
@@ -782,7 +782,7 @@ const MAX_SKIP_ERRORS = 3;
 
 function resetSkipErrors() { _skipErrors = 0; }
 
-function playNext() {
+function playNext(auto = false) {
   if (!S.queue.length) return;
   if (_skipErrors >= MAX_SKIP_ERRORS) {
     _skipErrors = 0;
@@ -790,6 +790,18 @@ function playNext() {
     $("pp-icon").className = "ti ti-player-play";
     vinylPlay(false);
     toast("Several tracks unavailable — check connection or try a different search.", 4000);
+    return;
+  }
+  const last = S.queueIdx >= S.queue.length - 1;
+  // The wrap-around is right for a MANUAL next tap on the final track, but
+  // wrong for an automatic advance: a queue that finished should stop, not
+  // silently start over. `auto` distinguishes the two rather than leaving
+  // every caller to remember the guard.
+  if (auto && last && S.repeat !== "all" && !S.shuffle) {
+    S.wantPlaying = false;
+    S.armed = null;
+    S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists();
+    releaseWakeLock();
     return;
   }
   const idx = S.shuffle
@@ -924,8 +936,17 @@ audio.addEventListener("ended", () => {
   }
 
   // ── SLOW PATH: nothing armed (shuffle, or arming hadn't finished) ──────
-  if (S.repeat === "all" || S.queueIdx < S.queue.length - 1) { playNext(); return; }
+  if (S.repeat === "all" || S.queueIdx < S.queue.length - 1) { playNext(true); return; }
+
+  // Queue exhausted. Clearing wantPlaying here is essential, not tidiness:
+  // when media ends the element fires `pause` as well as `ended`, so the
+  // background auto-resume below would otherwise see "user still wants
+  // audio, element is paused, src is present" and call play() again —
+  // restarting the final track on a loop forever.
+  S.wantPlaying = false;
+  S.armed = null;
   S.playing = false; setPlayIcons(false); vinylPlay(false); patchLists();
+  releaseWakeLock();
 });
 
 // Arm early enough that even a short track is ready before it ends.
@@ -3337,6 +3358,10 @@ function wakeLockSupported() { return "wakeLock" in navigator; }
 let _resumeGuard = 0;
 audio.addEventListener("pause", () => {
   if (!S.wantPlaying || S.loading) return;
+  // `pause` also fires when a track finishes normally. That is NOT the OS
+  // interrupting us, and resuming there just replays the track we already
+  // finished — which is what made the last song in a queue loop forever.
+  if (audio.ended) return;
   const now = Date.now();
   if (now - _resumeGuard < 800) return;   // debounce rapid pause/play churn
   _resumeGuard = now;
@@ -3345,7 +3370,7 @@ audio.addEventListener("pause", () => {
     // A deliberate user pause set wantPlaying=false, so we won't fight it.
     // In the background the OS may refuse play() — we try once and respect
     // a rejection rather than looping.
-    if (S.wantPlaying && audio.paused && audio.src && !S.loading) {
+    if (S.wantPlaying && audio.paused && !audio.ended && audio.src && !S.loading) {
       audio.play().catch(() => {});
     }
   }, 500);
@@ -3780,6 +3805,28 @@ function installDiagnostics() {
   rows.push({ ok: sw, label: sw
       ? "Service worker active"
       : "Service worker not controlling this page" });
+  // Which of the three modes are we actually in? This is the single most
+  // useful thing to know, because a "shortcut" install looks identical to a
+  // real one on the home screen but behaves like a browser tab: the media
+  // notification keeps Chrome's badge, and Android freezes it far sooner.
+  const standalone = window.matchMedia("(display-mode: standalone)").matches
+                  || window.navigator.standalone === true;
+  if (standalone) {
+    rows.push({ ok: true, label:
+      "Running as an INSTALLED app (WebAPK). The media notification should "
+      + "show Naada's icon, and background playback gets the best treatment "
+      + "Android gives a web app." });
+  } else {
+    rows.push({ ok: false, label:
+      "Running in a BROWSER TAB — not as the installed app. This is why the "
+      + "media notification shows Chrome's icon instead of Naada's: Android "
+      + "draws that badge from whichever app owns the media session, and "
+      + "right now that's Chrome. No web API can override it. Open Naada "
+      + "from its home-screen icon instead; if it still shows a browser "
+      + "address bar, it was installed as a SHORTCUT rather than a real app "
+      + "— uninstall it and reinstall via Chrome's menu > Install app." });
+  }
+
   rows.push({ ok: !!_installPrompt || installed, label: (_installPrompt || installed)
       ? "Chrome reports the app as installable"
       : "Chrome has not offered an install prompt" });
@@ -3974,6 +4021,35 @@ function renderRecentSearches() {
    same travelling wave as the header mark whenever music is playing.
 ═══════════════════════════════════════════════════════════════════════ */
 (function livingFavicon() {
+  /* Why this is gated rather than universal — and why the tab has been
+     blank on mobile despite the icon files being correct all along.
+
+     This code used to REMOVE the file-based <link rel="icon"> tags and
+     replace them with a single canvas-generated data: URI. On desktop that
+     works, which is exactly why every test I wrote passed: headless
+     Chromium behaves like a desktop browser.
+
+     Mobile Chrome does not behave that way. It resolves the favicon at
+     around page-load time and largely ignores later DOM mutations, and it
+     is unreliable with data: URI icons. So on a phone the sequence was:
+     perfectly good static PNGs get deleted, the data: URI replacement is
+     ignored, and the tab is left with NO icon at all. The animation was
+     causing the very bug it was meant to dress up.
+
+     So: only take over where there is genuinely a tab strip to animate —
+     a desktop browser window. Everywhere else the static PNGs stand
+     untouched, which is what every other PWA does and what actually works.
+
+     - display-mode: standalone -> installed app, there is no tab at all
+     - pointer: coarse          -> touch device, treat as mobile */
+  const standalone = window.matchMedia("(display-mode: standalone)").matches
+                  || window.navigator.standalone === true;
+  const coarse = window.matchMedia("(pointer: coarse)").matches;
+  if (standalone || coarse) {
+    window.ndlog && window.ndlog("favicon: static icons kept (no desktop tab strip)");
+    return;
+  }
+
   const N = 32;                       // 2x the 16px slot, for retina tabs
   let canvas, ctx, link, timer = null, phase = 0;
 

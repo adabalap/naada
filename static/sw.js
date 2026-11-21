@@ -1,7 +1,13 @@
 // Bump VER on every release to invalidate old caches.
-const VER   = "naada-v42";
+const VER   = "naada-v44";
 const SHELL = ["/", "/static/index.html", "/static/app.css",
-               "/static/app.js", "/manifest.json", "/static/icons/icon.svg"];
+               "/static/app.js", "/manifest.json",
+               // The tab icons belong in the precache too. Without them a
+               // favicon request that misses the network had nothing to fall
+               // back on, and hit the navigation fallback below instead.
+               "/static/icons/favicon-16.png", "/static/icons/favicon-32.png",
+               "/static/icons/favicon-48.png", "/static/icons/favicon.ico",
+               "/static/icons/icon-180.png", "/static/icons/icon-192.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VER).then(c => Promise.allSettled(SHELL.map(u => c.add(u)))));
@@ -59,6 +65,15 @@ self.addEventListener("fetch", e => {
         }
         return res;
       })
-      .catch(() => caches.match(request).then(hit => hit || caches.match("/")))
+      .catch(() => caches.match(request, { ignoreSearch: true }).then(hit => {
+        if (hit) return hit;
+        // Only a PAGE navigation may fall back to the app shell. Returning
+        // index.html for an image request (which is what used to happen)
+        // hands the browser HTML where it expects a PNG — the favicon then
+        // decodes to nothing and the tab renders blank. Anything that isn't
+        // a navigation gets an honest error instead.
+        if (request.mode === "navigate") return caches.match("/");
+        return new Response("", { status: 504, statusText: "offline" });
+      }))
   );
 });
