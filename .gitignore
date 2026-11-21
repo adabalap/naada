@@ -9,3 +9,5 @@ node_modules/
 dist/
 build/
 library.db*
+ai_cache.json
+RELEASE-v*.md
