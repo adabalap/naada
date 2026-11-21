@@ -1,0 +1,90 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main, native-app]
+    paths: ["android/**", ".github/workflows/android.yml", "app.py", "api_v1.py", "tests/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python tests/test_api_v1.py
+
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      NAADA_VERSION_CODE: ${{ github.run_number }}
+      NAADA_VERSION_NAME: 2.0.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Optional release key from secrets
+        env:
+          KEYSTORE_B64: ${{ secrets.NAADA_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "NAADA_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "NAADA_KEYSTORE_PASSWORD=${{ secrets.NAADA_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+            echo "NAADA_KEY_ALIAS=${{ secrets.NAADA_KEY_ALIAS }}" >> "$GITHUB_ENV"
+            echo "NAADA_KEY_PASSWORD=${{ secrets.NAADA_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build release APK
+        working-directory: android
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Report compile errors
+        if: failure()
+        run: |
+          # Surface Kotlin / Gradle errors as one annotation so they're readable from the API.
+          LOG="$RUNNER_TEMP/build.log"
+          ERRS=$( (grep -E '^e: |error:|What went wrong|^> ' "$LOG" || true) | head -80 | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+          echo "::error title=Build failed::${ERRS:-see log}"
+
+      - name: Rename APK
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk "out/Naada-$NAADA_VERSION_NAME.apk"
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Naada-${{ env.NAADA_VERSION_NAME }}
+          path: out/*.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-v${{ env.NAADA_VERSION_NAME }}
+          name: Naada ${{ env.NAADA_VERSION_NAME }}
+          target_commitish: ${{ github.sha }}
+          make_latest: "true"
+          files: out/*.apk
+          body: |
+            Native Naada for Android, built from `${{ github.ref_name }}` @ ${{ github.sha }}.
+            Download the APK below on your phone and open it to install or update.
